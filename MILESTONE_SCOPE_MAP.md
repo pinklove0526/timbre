@@ -33,6 +33,9 @@ Timbre is an Audacity-style audio editor in Java 17 + JavaFX. Clean-room: Audaci
 - WAV first. MP3/FLAC/Ogg later via pure-Java SPI libraries after a license check, NOT ffmpeg.
 - Waveform on a JavaFX Canvas with a min/max peak pyramid.
 - Own project format (folder + JSON manifest).
+- WAV read/write uses our own RIFF codec; `javax.sound.sampled` is used only for playback and recording (Milestones 2 and 5).
+- Planar float32 in memory.
+- Gaps between clips are silence; project sample rate is fixed by the first track.
 - UI mimics Audacity's classic layout closely.
 
 ## Non-goals for v1
