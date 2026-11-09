@@ -3,8 +3,9 @@
 An Audacity-style audio editor written in Java 17 and JavaFX. Early development: only the project skeleton exists (Milestone 0).
 
 ## Requirements
-- JDK 17 or newer
+- JDK 17 (tested with 17.0.2)
 - Maven 3.6.3 or newer
+- Linux: GTK 3 (required by JavaFX)
 
 ## Build, test, run
 ```

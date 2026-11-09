@@ -171,6 +171,15 @@
                   <shadedArtifactAttached>true</shadedArtifactAttached>
                   <shadedClassifierName>universal</shadedClassifierName>
                   <createDependencyReducedPom>false</createDependencyReducedPom>
+                  <artifactSet>
+                    <excludes>
+                      <!-- The unclassified javafx-controls dependency would pull the host platform's natives
+                           if the jar is ever built on an ARM machine; their native file names collide with
+                           the x64 ones (e.g. libglass.dylib). Separate per-architecture jars come later. -->
+                      <exclude>org.openjfx:*:jar:mac-aarch64</exclude>
+                      <exclude>org.openjfx:*:jar:linux-aarch64</exclude>
+                    </excludes>
+                  </artifactSet>
                   <filters>
                     <filter>
                       <artifact>*:*</artifact>
