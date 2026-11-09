@@ -10,3 +10,4 @@ dev-env.sh
 nbproject/
 .DS_Store
 Thumbs.db
+ENVIRONMENT.local.md
