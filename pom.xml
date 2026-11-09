@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2026 Jellyfish Ng
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.jellyfish</groupId>
+  <artifactId>timbre</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>Timbre</name>
+  <description>Audacity-style audio editor in Java and JavaFX</description>
+
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+    </license>
+  </licenses>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <maven.compiler.release>17</maven.compiler.release>
+    <javafx.version>17.0.21</javafx.version>
+    <junit.version>5.14.4</junit.version>
+    <main.class>com.jellyfish.timbre.app.TimbreApp</main.class>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-controls</artifactId>
+      <version>${javafx.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes>
+          <include>**/*.properties</include>
+        </includes>
+      </resource>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+        <excludes>
+          <exclude>**/*.properties</exclude>
+        </excludes>
+      </resource>
+    </resources>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.14.0</version>
+        <configuration>
+          <release>17</release>
+          <encoding>UTF-8</encoding>
+          <compilerArgs>
+            <arg>-Xlint:all</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.4</version>
+      </plugin>
+      <!-- Do NOT run javafx:run together with -Pdist (the dist profile adds all platforms' JavaFX jars). -->
+      <plugin>
+        <groupId>org.openjfx</groupId>
+        <artifactId>javafx-maven-plugin</artifactId>
+        <version>0.0.8</version>
+        <configuration>
+          <mainClass>${main.class}</mainClass>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!--
+      mvn -Pdist package  ->  target/timbre-<version>-universal.jar
+      Bundles JavaFX natives for win, linux and mac (x64). The *-aarch64 JavaFX jars are NOT included:
+      their native file names (e.g. libglass.dylib) collide with the x64 ones.
+      Do not run javafx:run with -Pdist.
+    -->
+    <profile>
+      <id>dist</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId>
+          <version>${javafx.version}</version><classifier>win</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId>
+          <version>${javafx.version}</version><classifier>linux</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-base</artifactId>
+          <version>${javafx.version}</version><classifier>mac</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId>
+          <version>${javafx.version}</version><classifier>win</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId>
+          <version>${javafx.version}</version><classifier>linux</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-graphics</artifactId>
+          <version>${javafx.version}</version><classifier>mac</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId>
+          <version>${javafx.version}</version><classifier>win</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId>
+          <version>${javafx.version}</version><classifier>linux</classifier>
+        </dependency>
+        <dependency>
+          <groupId>org.openjfx</groupId><artifactId>javafx-controls</artifactId>
+          <version>${javafx.version}</version><classifier>mac</classifier>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-shade-plugin</artifactId>
+            <version>3.6.0</version>
+            <executions>
+              <execution>
+                <phase>package</phase>
+                <goals><goal>shade</goal></goals>
+                <configuration>
+                  <shadedArtifactAttached>true</shadedArtifactAttached>
+                  <shadedClassifierName>universal</shadedClassifierName>
+                  <createDependencyReducedPom>false</createDependencyReducedPom>
+                  <filters>
+                    <filter>
+                      <artifact>*:*</artifact>
+                      <excludes>
+                        <exclude>module-info.class</exclude>
+                        <exclude>META-INF/versions/*/module-info.class</exclude>
+                        <exclude>META-INF/*.SF</exclude>
+                        <exclude>META-INF/*.DSA</exclude>
+                        <exclude>META-INF/*.RSA</exclude>
+                      </excludes>
+                    </filter>
+                  </filters>
+                  <transformers>
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                      <mainClass>com.jellyfish.timbre.app.Launcher</mainClass>
+                    </transformer>
+                  </transformers>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

@@ -1,0 +1,12 @@
+target/
+build-logs/
+dev-env.sh
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+nbproject/
+.DS_Store
+Thumbs.db
