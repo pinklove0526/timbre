@@ -30,7 +30,6 @@ import com.jellyfish.timbre.model.TrackSnapshot;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -47,10 +46,10 @@ class EndToEndTest {
         Track whole = Track.of("take 1", opened.source());
         Project project = new Project();
         Clip only = whole.clips().get(0);
-        List<Clip> halves = only.split(only.timelineStart() + only.frameCount() / 2);
+        Clip.Split halves = only.split(only.timelineStart() + only.frameCount() / 2);
         Track split = new Track("take 1", opened.source().sampleRate(), opened.source().channelCount());
-        split.addClip(halves.get(0));
-        split.addClip(halves.get(1));
+        split.addClip(halves.left());
+        split.addClip(halves.right());
         project.addTrack(split);
         assertEquals(48000, project.sampleRate().getAsInt());
         assertEquals(2, split.clips().size());

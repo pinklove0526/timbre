@@ -15,7 +15,6 @@
  */
 package com.jellyfish.timbre.model;
 
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -76,10 +75,10 @@ public record Clip(SampleSource source, long sourceStart, long frameCount, long 
      * exactly the original source range, with no gap or overlap.
      *
      * @param timelineFrame split position, {@code timelineStart < frame < timelineEnd()}
-     * @return a list of two clips: left, then right
+     * @return the left and right halves
      * @throws IllegalArgumentException if the position is not strictly inside the clip
      */
-    public List<Clip> split(long timelineFrame) {
+    public Split split(long timelineFrame) {
         if (timelineFrame <= timelineStart || timelineFrame >= timelineEnd()) {
             throw new IllegalArgumentException("split position " + timelineFrame
                     + " must be strictly inside (" + timelineStart + ", " + timelineEnd() + ")");
@@ -87,6 +86,27 @@ public record Clip(SampleSource source, long sourceStart, long frameCount, long 
         long leftLength = timelineFrame - timelineStart;
         Clip left = new Clip(source, sourceStart, leftLength, timelineStart);
         Clip right = new Clip(source, sourceStart + leftLength, frameCount - leftLength, timelineFrame);
-        return List.of(left, right);
+        return new Split(left, right);
+    }
+
+    /**
+     * The two halves produced by {@link #split(long)}.
+     *
+     * <p><b>Threading:</b> immutable; safe to share between threads.
+     *
+     * @param left  the half before the split position
+     * @param right the half from the split position onwards
+     */
+    public record Split(Clip left, Clip right) {
+
+        /**
+         * Validates the components.
+         *
+         * @throws NullPointerException if either half is null
+         */
+        public Split {
+            Objects.requireNonNull(left, "left");
+            Objects.requireNonNull(right, "right");
+        }
     }
 }
