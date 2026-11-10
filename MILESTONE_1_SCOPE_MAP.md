@@ -11,7 +11,7 @@
 ## package `com.jellyfish.timbre.model`
 - **SampleSource** (interface): `sampleRate()`, `channelCount()`, `frameCount()`, `read(long startFrame, int frames, float[][] dest, int destOffset)`. `dest` has at least `channelCount` arrays, each with room for `destOffset + frames`; the range `[startFrame, startFrame+frames)` must lie within `[0, frameCount()]` else `IndexOutOfBoundsException`; bad `dest` shape -> `IllegalArgumentException`. Implementations are thread-safe for concurrent reads and do not allocate in `read()`.
 - **MemorySampleSource** (final, immutable): `copyOf(rate, channels)` (defensive copy) and `adopt(rate, channels)` (takes ownership; used by the WAV reader). Validates sampleRate > 0, channelCount >= 1, equal channel lengths, frames <= Integer.MAX_VALUE - 8. Empty source allowed.
-- **Clip** (record): `source`, `sourceStart`, `frameCount`, `timelineStart`. Invariants: sourceStart >= 0, frameCount > 0, sourceStart + frameCount <= source.frameCount(), timelineStart >= 0. Methods: `timelineEnd()`, `withTimelineStart(long)`, `split(long)` (strictly inside the clip; halves cover the source range exactly).
+- **Clip** (record): `source`, `sourceStart`, `frameCount`, `timelineStart`. Invariants: sourceStart >= 0, frameCount > 0, sourceStart + frameCount <= source.frameCount(), timelineStart >= 0. Methods: `timelineEnd()`, `withTimelineStart(long)`, `split(long)` returning the nested record `Clip.Split(Clip left, Clip right)` (position strictly inside the clip; halves cover the source range exactly).
 - **Track** (final, mutable, single-thread use in M1): `Track(name, sampleRate, channelCount)`, `Track.of(name, source)`, `addClip` (rate/channel match, no overlap, sorted by timelineStart), `clips()` (unmodifiable copy), `snapshot()`. Gaps are silence.
 - **TrackSnapshot** (final, immutable, `SampleSource`): `frameCount()` = end of last clip; `read()` zero-fills gaps, finds the first relevant clip by binary search, no allocation per call.
 - **Project** (final): `sampleRate()` (OptionalInt), `addTrack`, `tracks()`. The first track fixes the sample rate; a different rate -> `SampleRateMismatchException` (extends `IllegalArgumentException`, names both rates). Channel counts may differ per track.
@@ -29,7 +29,7 @@
   - Data size 0, larger than the remaining bytes, or 0xFFFFFFFF: use bytes actually present; trailing partial frame dropped; allocation never based on the declared size alone.
   - Size guard: decoded float size > half of `Runtime.maxMemory()` -> `UnsupportedAudioFormatException` (a file-backed source is planned). A package-private overload takes an explicit byte limit for tests.
   - Mapping: signed N-bit / 2^(N-1) (-32768 -> -1.0f); 8-bit unsigned (v-128)/128f; float32 verbatim (NaN/Infinity kept). Decoded in blocks.
-- **WavWriter**: `write(Path, SampleSource, WavEncoding)`.
+- **WavWriter**: `write(Path, SampleSource, WavEncoding)`. Accepts at most 64 channels (same cap as the reader) and rejects output larger than 4 GiB - 1 with `UnsupportedAudioFormatException`.
   - Float -> integer: scale 2^(N-1) in double, `Math.rint` (half-even), clamp to [-2^(N-1), 2^(N-1)-1], NaN -> 0; 8-bit adds 128. No dither. FLOAT_32 verbatim (bit-exact).
   - Mono/stereo: plain fmt chunk (tag 1 or 3); more than 2 channels: EXTENSIBLE with the right subformat GUID. Float files get a `fact` chunk. Pad byte when the data size is odd. Outputs with RIFF size > 4 GiB - 1 are rejected before anything is written.
   - Streams the source in blocks. Atomic result: temp file in the target's directory, then move (REPLACE_EXISTING, ATOMIC_MOVE with plain-move fallback); on any failure the target is unchanged and no temp file remains.
@@ -47,4 +47,12 @@ Playback, mixing, recording, effects, edit commands and undo, UI, peak pyramid, 
 - JDK oracle (test scope): JDK-written WAV read by `WavReader`; `WavWriter` output read through `AudioSystem`; supported cases logged.
 - Model: Clip, Track, TrackSnapshot (immutability, gaps, random-split property test, boundaries, range errors), Project rate policy.
 - Allocation guard (`ThreadMXBean`), architecture guard (no `import javafx` in model/audio/dsp/edit), end-to-end test.
+- Known-answer tests (`WavKnownAnswerTest`): hand-written distinct-byte literals for 8/16/24/32-bit, float32, stereo and 3-channel interleave, EXTENSIBLE 24-in-32; writer output checked as raw bytes.
+- Declared-size tests (`WavDeclaredSizeTest`): a data chunk declaring 0x7FFFFFFF or 0xFFFFFFFF with a few bytes present, through both `read(Path)` and `read(InputStream)`, with a measured allocation budget.
 - Opt-in real-world corpus (`-Dtimbre.testWavDir=<dir>`).
+- Opt-in real-encoder interop (`-Dtimbre.interop=true`, needs `ffmpeg`; `ffprobe` and `sox` used when present).
+
+### Testing
+Two opt-in system properties, both skipped when absent:
+- `timbre.testWavDir=<directory>`: runs `WavCorpusTest` over every `.wav` file in the directory (needs a directory of WAV files).
+- `timbre.interop=true`: runs `ExternalToolInteropTest` (needs `ffmpeg` on the PATH; it only writes into JUnit temp directories and never touches an audio device).

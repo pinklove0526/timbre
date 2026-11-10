@@ -19,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -64,9 +63,9 @@ class ClipTest {
     @ValueSource(longs = {101, 105, 119, 150, 199})
     void splitHalvesCoverTheOriginalExactly(long at) {
         Clip c = new Clip(src(1000), 300, 100, 100); // timeline [100, 200)
-        List<Clip> halves = c.split(at);
-        Clip left = halves.get(0);
-        Clip right = halves.get(1);
+        Clip.Split halves = c.split(at);
+        Clip left = halves.left();
+        Clip right = halves.right();
         assertEquals(c.timelineStart(), left.timelineStart());
         assertEquals(at, left.timelineEnd());
         assertEquals(at, right.timelineStart());
@@ -77,6 +76,20 @@ class ClipTest {
         assertEquals(c.frameCount(), left.frameCount() + right.frameCount());
         assertSame(c.source(), left.source());
         assertSame(c.source(), right.source());
+    }
+
+    @Test
+    void splitHalvesTileTheSourceRangeAtEveryPosition() {
+        Clip c = new Clip(src(1000), 300, 100, 100);
+        for (long at = c.timelineStart() + 1; at < c.timelineEnd(); at++) {
+            Clip.Split s = c.split(at);
+            assertEquals(c.sourceStart(), s.left().sourceStart(), "at " + at);
+            assertEquals(s.left().sourceStart() + s.left().frameCount(), s.right().sourceStart(),
+                    "no gap or overlap at " + at);
+            assertEquals(c.sourceStart() + c.frameCount(), s.right().sourceStart() + s.right().frameCount(),
+                    "end at " + at);
+            assertEquals(s.left().timelineEnd(), s.right().timelineStart(), "timeline join at " + at);
+        }
     }
 
     @ParameterizedTest

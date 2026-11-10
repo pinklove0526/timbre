@@ -15,7 +15,7 @@
 - Own RIFF/WAVE codec in `audio` (no `javax.sound.sampled` in main code).
 - Gaps between clips are silence.
 - Project sample rate is fixed by the first track added.
-- `Clip.split` returns a `List<Clip>` of two clips (left, right); the spec did not name a return type.
+- `Clip.split` returns the record `Clip.Split(Clip left, Clip right)` (changed from `List<Clip>` during M1 hardening, see Recorded retractions).
 - Writer accepts at most 64 channels (same cap as the reader).
 - Writer rejects over-4 GiB output with `UnsupportedAudioFormatException`.
 
@@ -33,6 +33,14 @@
 - repository.apache.org/snapshots (default repo of Maven 3.10) timed out once (warning only).
 - JavaFX 17.0.21 class files are version 55 (Java 11), so it supports JDK 17.0.2.
 
+## M1 hardening (branch feature/pinklove0526/m1-hardening, 2026-11-10)
+- T1: gap proven (the two 24-bit mapping tests survived a low/mid byte swap). New `WavKnownAnswerTest` (15 tests, hand-written byte literals); all six 24-bit byte-swap mutations (decode and encode) are caught.
+- T2: `ExternalToolInteropTest` (opt-in, `-Dtimbre.interop=true`) against ffmpeg 7.1.5 / ffprobe / sox 14.4.2: 69 cases (5 encodings x 4 channel counts x 3 rates, plus bext, id3 and non-seekable pipe variants), about 30 s. Read and write matched ffmpeg exactly (maximum difference 0.0) for every encoding including 32-bit PCM; sox (informational) differs from ours only on float32 files, by up to 2.3e-10.
+- T3: `Clip.Split` record; new test that the halves tile the source range at every split position; mutation check done.
+- T4: `WavDeclaredSizeTest` covers `read(Path)` and `read(InputStream)` with declared sizes 0x7FFFFFFF and 0xFFFFFFFF (about 0.3 MB and 0.8 MB allocated, budget 4 MiB).
+- T5: full suite with `java.io.tmpdir` on the exFAT drive: all green, nothing left behind; `ATOMIC_MOVE` with `REPLACE_EXISTING` works on exFAT, so WavWriter's plain-move fallback is not taken there.
+- Deviations: the interop class is skipped silently at class level (surefire does not count it as skipped); the T5 scratch directory could not be removed by the tool (see the hardening report) and is left for the user to delete.
+
 ## Risks
 - The Maven local repo is on removable exFAT media. If the drive is unplugged/unmounted, builds must not run (dev-env.sh refuses to continue when the mount point is missing). exFAT has no Unix permissions/symlinks, so executable bits and some tooling behave differently.
 
@@ -43,6 +51,8 @@
 ## Recorded retractions
 - 2026-11-09: Oracle public Maven repository (oracle-public) removed from the Maven settings (repository, pluginRepository, profile and activeProfile). Reason: every artifact came from Maven Central; the Oracle repo supplied nothing and only added ~150 not-found warnings per cold build. Re-add it only if an Oracle-hosted artifact is ever needed.
 - Earlier plan to use `javax.sound.sampled` for WAV I/O is replaced by an own RIFF codec (reasons: headless testability, 24-bit/float/extensible control, no JDK quirks). `javax.sound.sampled` remains planned for playback/recording only.
+
+- 2026-11-10: `Clip.split` returning `List<Clip>` is replaced by the nested record `Clip.Split(Clip left, Clip right)`. Reason: a two-element list says nothing about which element is which and allows indexing mistakes; the record names the halves and cannot have the wrong size.
 
 ## Deferred
 - Apple Silicon (mac-aarch64) and Linux aarch64 jars: separate per-architecture jars are needed because their native file names collide with the x64 ones.
@@ -57,5 +67,4 @@
 - Dither on integer export.
 - Progress and cancellation for long reads and writes.
 - Project save/load (Milestone 7).
-- Milestone 2 audio-device probe (see the audio stack note above).
 - Real-world WAV corpus run (`-Dtimbre.testWavDir=<dir>`) once a directory with real files is available.

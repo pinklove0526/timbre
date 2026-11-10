@@ -17,6 +17,14 @@ java -jar target/timbre-<version>-universal.jar --version  # print version, no w
 ```
 Do not run `javafx:run` together with `-Pdist`.
 
+## Testing
+```
+mvn test
+mvn test -Dtimbre.testWavDir=<directory>     # also decode every .wav in a directory (needs real WAV files)
+mvn test -Dtest=ExternalToolInteropTest -Dtimbre.interop=true   # compare against ffmpeg (ffmpeg must be installed)
+```
+Both properties are opt-in; without them those tests are skipped.
+
 The universal jar bundles JavaFX natives for Windows, Linux and macOS (x64 only).
 
 ## Layout

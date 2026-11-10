@@ -153,9 +153,9 @@ class TrackSnapshotTest {
                 for (int i = 0; i < clips.size(); i++) {
                     Clip c = clips.get(i);
                     if (at > c.timelineStart() && at < c.timelineEnd()) {
-                        List<Clip> halves = c.split(at);
-                        clips.set(i, halves.get(0));
-                        clips.add(i + 1, halves.get(1));
+                        Clip.Split halves = c.split(at);
+                        clips.set(i, halves.left());
+                        clips.add(i + 1, halves.right());
                         break;
                     }
                 }
