@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
-/** Enforces that the non-UI packages never depend on JavaFX. */
+/** Enforces that the non-UI packages never depend on JavaFX, and that audio never depends on ui. */
 class ArchitectureGuardTest {
 
     @Test
@@ -50,5 +50,24 @@ class ArchitectureGuardTest {
         }
         assertTrue(scanned > 10, "scanner found only " + scanned + " files; wrong working directory?");
         assertTrue(violations.isEmpty(), "JavaFX imports found: " + violations);
+    }
+    @Test
+    void audioDoesNotImportUi() throws IOException {
+        Path dir = Path.of("src/main/java/com/jellyfish/timbre/audio");
+        List<String> violations = new ArrayList<>();
+        int scanned = 0;
+        try (Stream<Path> files = Files.walk(dir)) {
+            for (Path f : files.filter(p -> p.toString().endsWith(".java")).toList()) {
+                scanned++;
+                List<String> lines = Files.readAllLines(f);
+                for (int i = 0; i < lines.size(); i++) {
+                    if (lines.get(i).contains("import com.jellyfish.timbre.ui")) {
+                        violations.add(f + ":" + (i + 1));
+                    }
+                }
+            }
+        }
+        assertTrue(scanned > 10, "scanner found only " + scanned + " files; wrong working directory?");
+        assertTrue(violations.isEmpty(), "audio imports ui: " + violations);
     }
 }

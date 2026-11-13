@@ -15,6 +15,54 @@ Work is split in two phases. Phase A (this document's "Phase A findings") is an 
 ## Non-goals (M2)
 Recording, resampling, device-selection UI, mute/solo/gain/pan, looping, scrubbing, selection playback, effects.
 
+## Amended decisions (Phase B, 2026-11-13; evidence: Phase A findings below)
+- **3'. Engine:** one dedicated audio thread, preallocated buffers, default 200 ms line buffer and 1024-frame render blocks. Blocking writes with explicit handling of short and zero writes: the unwritten remainder of a block is kept and written after a pause, never dropped. The thread parks while paused. `flush()` is never called. The first block is rendered before `start()`. Natural end: write the final partial block, then `drain()`.
+- **5'. Transport:** `play(fromFrame)`, `pause`, `resume`, `stop`. Pause = `line.stop()`/`start()` on the open line. Stop = `stop()` then `close()`; the next play reopens. At natural end: drain, close, STOPPED, `finished()` callback. In both cases the cursor returns to where playback started. Position = device position corrected by `PlaybackClock`: capped by elapsed playing time and frames written during the first 2 buffer-lengths after each start and resume (refined from "always capped" to avoid long-run lag if the device clock outruns the system clock), extrapolated between 20 ms steps, never decreasing within a run, frozen while paused.
+- **6'. Tests and harness:** `AudioSink` abstraction; the fake sink reproduces the Phase A artifacts and is validated against recorded traces; the estimator is tested by replaying real traces; the harness interpolates between device steps. The real-device test stays opt-in (`-Dtimbre.audioDevice=true`).
+- Unchanged: decisions 1, 2 and 4.
+
+## Design (Phase B, condensed)
+Package `audio` (no JavaFX): `AudioDeviceException` (checked); `AudioSink` (open, start, stop with queued audio retained, write that may return short or zero, drain, `positionFrames`, `bufferFrames`, close that discards); `JavaSoundSink` (default route, 16-bit signed LE stereo, 200 ms buffer, never flushes); `MixPlan` (immutable list of sources, common sample rate, length = longest source); `StereoMixer` (allocation-free `mix`; mono to both channels, 2 or more channels play channels 1 and 2, frames past a source's end are silence); float to PCM16 via the M1 `SampleCodec`; `PlaybackClock` (pure, all times passed in); `PlaybackListener`; `EngineStats`; `PlaybackEngine` (states STOPPED/PLAYING/PAUSED, atomic plan swap at block boundaries, daemon thread "timbre-audio", volatile fields plus park/unpark on the hot path). Package `ui`: `TransportHarnessPane`, temporary, replaced by the waveform cursor in Milestone 3.
+
+Non-goals added for Phase B: audible-latency compensation, underrun recovery beyond diagnostics.
+
+## Phase B0 findings
+Silent measurements (digital zeros, default route only) on 2026-11-13; logs and CSVs in `build-logs/m2/` (03 to 06). **Gate: passed** (queued audio is retained across `stop()`/`start()`, no call hung past the 3 s watchdog, drift is far below 1000 ppm).
+
+**retain** (`stop()` then `start()` on an open line, queued zeros, `drain()` timed):
+- A line does not run after `start()` until the next `write()`: `isRunning`/`isActive` stay false after `start()` (also after the very first `start()`), and become true on the first write.
+- Variant 1 and 2 as specified (no write after the restart): `drain()` took 497.8 ms and 498.7 ms, neither the expected ~181/~80 ms nor ~0 ms; the position did not advance. This is the JDK's give-up on a position that does not move, not a result about retention.
+- With one 1024-frame write after the restart (variant 3, stopped right after the first write): `drain()` took 203.5 ms against 204.6 ms expected, so the queued audio was retained. With 16 blocks written after a restart that followed 100 ms of playing (variant 5): 457.6 ms against 452.9 ms expected, retained and played in full. Variant 4 (100 ms of playing, then only one block after the restart, about 105 ms queued): `drain()` again took the 500 ms give-up with a frozen position and `available()` at 22686 frames.
+- Position artifacts confirmed: after `stop()` the position and `available()` jump (8820 to 17640 frames at stop in variant 2, `available()` above the 8820-frame buffer), and the position can go backwards after a drain (9638 to 9024 in variant 3). The clock estimator must therefore never trust the raw position across stop/start.
+- Consequences for the engine: after `resume()` the audio thread must write immediately (it always has a pending block); a resume with only about 100 ms of audio queued (a pause in the last 100 ms of a project) may not restart until more audio is written, so the final `drain()` may give up after about 500 ms instead of playing the tail.
+
+**unblock** (writer blocked, then `stop()` or `close()` from another thread):
+- The line accepted 2 x buffer (17640 frames) in 50 ms without blocking, and the same for the first ~17640 frames of a 10 x buffer write, so the downstream queue is about two buffers deep. With the 10 x buffer write (88200 frames): `stop()` took 0.2 ms and the blocked write returned 70560 bytes (17640 frames, the part accepted) 0.3 ms later; `close()` took 2.9 ms and the write returned 70556 bytes 2.5 ms later. No hang.
+- `drain()` on a stopped line (4000 zero frames queued, then `stop()`) returned by itself within 50 ms; `close()` took 2.5 ms.
+
+**drift** (zeros, 1024-frame blocks, sampled every 100 ms, fit from 10 s on):
+| | 44100 Hz, 300 s | 48000 Hz, 120 s |
+|---|---|---|
+| fitted slope | 44099.994 frames/s = -0.1 ppm | 47999.838 frames/s = -3.4 ppm |
+| max residual | 17.1 ms | 16.0 ms |
+| position minus wall at 60 s | -5.4 ms | +4.7 ms |
+| at 120 s | +12.5 ms | +10.8 ms |
+| at 300 s | +1.0 ms | n/a |
+The device clock and the system clock agree to a few ppm over minutes, so the Phase A drift question is settled (the staircase of 20 ms steps explains the 16 to 17 ms residual).
+
+
+## Manual acceptance (user)
+Generated files (git-ignored, regenerate with `java -cp target/classes:target/test-classes com.jellyfish.timbre.audio.probe.ManualKitGenerator <dir>` after `mvn -B -o test-compile`): `beeps_stereo_44100.wav` (20 s, one rising-pitch beep every 250 ms with 10 ms gaps, the pitch cycles every 20 beeps), `pan_test_mono_44100.wav` (mono tone), `bass_mono_48000.wav` (48 kHz, for the rate-mismatch error). All about -24 dBFS. Start the app with `mvn javafx:run` or `java -jar target/timbre-<version>-universal.jar`.
+- [ ] File > Open WAV: open `beeps_stereo_44100.wav` and press Play.
+- [ ] The time readout and the slider advance smoothly (no stalls, no jumps).
+- [ ] Pause and resume about 20 times at random points: no skipped or repeated beeps (a skip or repeat is heard as a pitch jump) and no loud clicks.
+- [ ] Stop returns the cursor and the slider to the start.
+- [ ] While stopped, drag the slider to the middle and press Play: playback starts there.
+- [ ] Open `pan_test_mono_44100.wav` as a second track: both tracks are audible, the mono track is centered.
+- [ ] Opening `bass_mono_48000.wav` shows the sample-rate error and does not change the project.
+- [ ] Close the window while playing: the process ends (check `ps` for a lingering `java`).
+- [ ] Play to the end: the cursor returns to the start and nothing hangs.
+
 ## Phase A findings
 Measured on 2026-11-10 with the dev tool `AudioProbe` (JDK 17.0.2, Linux 6.18, PulseAudio 17.0 with the ALSA pulse plugin; default sink `alsa_output.pci-0000_00_1f.3.analog-stereo`, 44100 Hz s16 stereo default, HDA Intel PCH / Realtek ALC256). Raw data: `build-logs/m2-probe/` (git-ignored). Audible budget used: 16.8 s of -24 dBFS tone.
 
