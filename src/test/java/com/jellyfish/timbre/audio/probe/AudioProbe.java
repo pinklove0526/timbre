@@ -26,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -38,8 +39,9 @@ import javax.sound.sampled.SourceDataLine;
 /**
  * Developer tool that measures the audio output path of this machine. Not a test, not shipped.
  *
- * <p>Usage: {@code AudioProbe <env|mixers|open|clock|pause|flush|drain|underrun|reuse|all> [--consent]
- * [--out DIR]}. Audible modes (clock, pause, flush, drain, underrun, reuse) refuse to run without
+ * <p>Usage: {@code AudioProbe <env|mixers|open|clock|pause|flush|drain|underrun|reuse|retain|unblock|drift|all>
+ * [--consent] [--out DIR] [--rate HZ --seconds N]}. The silent modes retain, unblock and drift write only digital
+ * zeros ({@code all} does not include them; drift runs for minutes). Audible modes (clock, pause, flush, drain, underrun, reuse) refuse to run without
  * {@code --consent}, which must only be given after the user agreed; they play quiet (-24 dBFS) tones
  * on the default output path and stop when the 30 s audible budget in {@code sound-ledger.txt} is used up.
  * Capture lines are only listed, never opened.
@@ -55,6 +57,9 @@ public final class AudioProbe {
 
     private static Path out = Path.of("build-logs", "m2-probe");
     private static boolean consent;
+    private static int driftRate = 0;
+    private static int driftSeconds = 0;
+    private static final long GUARD_MS = 3000;
 
     private AudioProbe() {
     }
@@ -71,6 +76,8 @@ public final class AudioProbe {
             switch (args[i]) {
                 case "--consent" -> consent = true;
                 case "--out" -> out = Path.of(args[++i]);
+                case "--rate" -> driftRate = Integer.parseInt(args[++i]);
+                case "--seconds" -> driftSeconds = Integer.parseInt(args[++i]);
                 default -> mode = args[i];
             }
         }
@@ -82,7 +89,7 @@ public final class AudioProbe {
         Files.createDirectories(out);
         Thread dog = new Thread(() -> {
             try {
-                Thread.sleep(150_000);
+                Thread.sleep(args.length > 0 && args[0].equals("drift") ? 700_000 : 150_000);
             } catch (InterruptedException e) {
                 return;
             }
@@ -137,6 +144,9 @@ public final class AudioProbe {
                         reuse();
                     }
                 }
+                case "retain" -> retain();
+                case "unblock" -> unblock();
+                case "drift" -> drift();
                 default -> {
                     System.err.println("unknown mode " + m);
                     System.exit(2);
@@ -755,5 +765,263 @@ public final class AudioProbe {
                         tFirst < 0 ? Double.NaN : ms(tFirst - tw), posEnd, tone.length / FRAME_BYTES));
             }
         }
+    }
+
+    // ------------------------------------------------------------------ guarded calls (silent B0 modes)
+
+    /** Result of a call run under the watchdog. */
+    private static final class Timed {
+        long nanos;
+        Object value;
+        Throwable error;
+        boolean timedOut;
+
+        String describe() {
+            return timedOut ? "TIMEOUT(>" + GUARD_MS + " ms)" : f("%.1f ms", ms(nanos))
+                    + (error != null ? " threw " + error : "") + (value != null ? " returned " + value : "");
+        }
+    }
+
+    /** Runs {@code op} on a helper thread; on timeout runs {@code onTimeout} from this thread. */
+    private static Timed guarded(Callable<?> op, Runnable onTimeout) throws InterruptedException {
+        Timed r = new Timed();
+        Thread t = new Thread(() -> {
+            long t0 = System.nanoTime();
+            try {
+                r.value = op.call();
+            } catch (Exception | Error e) {
+                r.error = e;
+            }
+            r.nanos = System.nanoTime() - t0;
+        }, "probe-guarded");
+        t.setDaemon(true);
+        t.start();
+        t.join(GUARD_MS);
+        if (t.isAlive()) {
+            r.timedOut = true;
+            r.nanos = TimeUnit.MILLISECONDS.toNanos(GUARD_MS);
+            onTimeout.run();
+            t.join(1000);
+        }
+        return r;
+    }
+
+    private static String state(SourceDataLine l) {
+        return f("pos=%d avail=%d running=%b active=%b", l.getLongFramePosition(), l.available() / FRAME_BYTES,
+                l.isRunning(), l.isActive());
+    }
+
+    private static SourceDataLine freshLine(int rate) throws LineUnavailableException {
+        AudioFormat fmt = format(rate);
+        SourceDataLine l = AudioSystem.getSourceDataLine(fmt);
+        l.open(fmt, bufferBytes(rate));
+        return l;
+    }
+
+    // ------------------------------------------------------------------ retain (silent)
+
+    private static void retain() throws Exception {
+        for (int variant = 1; variant <= 5; variant++) {
+            boolean pre100 = variant == 2 || variant == 4 || variant == 5;
+            boolean writeAfterRestart = variant >= 3;
+            int extraBlocks = variant == 5 ? 16 : 1;
+            SourceDataLine l = freshLine(44100);
+            int bufferFrames = l.getBufferSize() / FRAME_BYTES;
+            System.out.println("RETAIN variant " + variant + (pre100 ? " (100 ms before stop)" : "") + (writeAfterRestart ? " (+write after restart)" : "") + ": buffer " + bufferFrames + " frames");
+            System.out.println("  after open:  " + state(l));
+            l.start();
+            System.out.println("  after start: " + state(l));
+            byte[] zeros = new byte[8000 * FRAME_BYTES];
+            int n = l.write(zeros, 0, zeros.length);
+            System.out.println("  after write (" + n / FRAME_BYTES + " frames): " + state(l));
+            if (pre100) {
+                sleep(100);
+                System.out.println("  after 100 ms: " + state(l));
+            }
+            l.stop();
+            System.out.println("  after stop:  " + state(l));
+            sleep(500);
+            System.out.println("  after 500 ms stopped: " + state(l));
+            l.start();
+            System.out.println("  after restart: " + state(l));
+            final SourceDataLine line = l;
+            if (writeAfterRestart) {
+                long tw = System.nanoTime();
+                final int blocks = extraBlocks;
+                Timed wr = guarded(() -> {
+                    int total = 0;
+                    for (int b = 0; b < blocks; b++) {
+                        total += line.write(new byte[BLOCK_FRAMES * FRAME_BYTES], 0, BLOCK_FRAMES * FRAME_BYTES);
+                    }
+                    return total / FRAME_BYTES;
+                }, line::close);
+                System.out.println("  after restart + " + extraBlocks + " x 1024-frame write: write phase "
+                        + wr.describe() + " frames; " + (wr.timedOut ? "line closed by watchdog" : state(l)));
+                if (wr.timedOut) {
+                    continue;
+                }
+            }
+            Timed d = guarded(() -> {
+                line.drain();
+                return null;
+            }, line::close);
+            System.out.println(f("  drain() after restart: %s (queued audio would take %.1f ms at the point of stop;"
+                            + " variant 1 retained = about that long (+23 ms if one block was written after restart), discarded = ~0 ms)",
+                    d.describe(), (pre100 ? framesToMs(8000, 44100) - 100 : framesToMs(8000, 44100))
+                            + (writeAfterRestart ? framesToMs(extraBlocks * BLOCK_FRAMES, 44100) : 0)));
+            System.out.println("  after drain: " + (d.timedOut ? "line closed by watchdog" : state(l)));
+            l.close();
+        }
+    }
+
+    // ------------------------------------------------------------------ unblock (silent)
+
+    private static void unblock() throws Exception {
+        for (int mult : new int[] {2, 10}) {
+        for (String how : new String[] {"stop", "close"}) {
+            SourceDataLine l = freshLine(44100);
+            int bufferFrames = l.getBufferSize() / FRAME_BYTES;
+            l.start();
+            byte[] zeros = new byte[mult * bufferFrames * FRAME_BYTES];
+            Timed[] w = new Timed[1];
+            Thread t = new Thread(() -> {
+                long t0 = System.nanoTime();
+                Timed r = new Timed();
+                try {
+                    r.value = l.write(zeros, 0, zeros.length);
+                } catch (RuntimeException e) {
+                    r.error = e;
+                }
+                r.nanos = System.nanoTime() - t0;
+                w[0] = r;
+            }, "probe-writer");
+            long t0 = System.nanoTime();
+            t.start();
+            sleep(50);
+            long tCall = System.nanoTime();
+            if (how.equals("stop")) {
+                l.stop();
+            } else {
+                l.close();
+            }
+            double callMs = ms(System.nanoTime() - tCall);
+            t.join(GUARD_MS);
+            boolean hung = t.isAlive();
+            if (hung) {
+                l.close();
+                t.join(1000);
+            }
+            Timed r = w[0];
+            System.out.println(f("UNBLOCK (%s): write of %d bytes (%d frames, " + mult + " x buffer) while main calls %s() after 50 ms:"
+                            + " %s() took %.1f ms; write returned %s after %.1f ms from its start (%.1f ms after the call);"
+                            + " %s",
+                    how, zeros.length, zeros.length / FRAME_BYTES, how, how, callMs,
+                    r == null ? "NOTHING (hung)" : String.valueOf(r.value), r == null ? Double.NaN : ms(r.nanos),
+                    r == null ? Double.NaN : ms(r.nanos) - ms(tCall - t0), hung ? "TIMEOUT: write still blocked after "
+                            + GUARD_MS + " ms, line closed from main" : "write did not hang"));
+            if (!how.equals("close")) {
+                l.close();
+            }
+        }
+        }
+        // (c) drain() on a stopped line, then close()
+        SourceDataLine l = freshLine(44100);
+        l.start();
+        byte[] zeros = new byte[4000 * FRAME_BYTES];
+        l.write(zeros, 0, zeros.length);
+        l.stop();
+        long[] ret = new long[1];
+        Thread t = new Thread(() -> {
+            long t0 = System.nanoTime();
+            l.drain();
+            ret[0] = System.nanoTime() - t0;
+        }, "probe-drainer");
+        t.start();
+        sleep(50);
+        boolean aliveBeforeClose = t.isAlive();
+        long tCall = System.nanoTime();
+        l.close();
+        double closeMs = ms(System.nanoTime() - tCall);
+        t.join(GUARD_MS);
+        boolean hung = t.isAlive();
+        System.out.println(f("UNBLOCK (drain on stopped line): drain still blocked after 50 ms: %b; close() took %.1f ms;"
+                + " drain() %s", aliveBeforeClose, closeMs, hung ? "TIMEOUT: still blocked " + GUARD_MS
+                + " ms after close()" : f("returned %.1f ms after the close() call", ms(ret[0]) - 50.0)));
+    }
+
+    // ------------------------------------------------------------------ drift (silent, long)
+
+    private static void drift() throws Exception {
+        if (driftRate > 0) {
+            driftRun(driftRate, driftSeconds > 0 ? driftSeconds : 120);
+        } else {
+            driftRun(44100, 300);
+            driftRun(48000, 120);
+        }
+    }
+
+    private static void driftRun(int rate, int seconds) throws Exception {
+        AudioFormat fmt = format(rate);
+        SourceDataLine l = AudioSystem.getSourceDataLine(fmt);
+        l.open(fmt, bufferBytes(rate));
+        ProbeSampler s = new ProbeSampler(l, 100_000_000L);
+        byte[] block = new byte[BLOCK_FRAMES * FRAME_BYTES];
+        s.begin();
+        long t0 = System.nanoTime();
+        s.event("first-write");
+        l.start();
+        while (System.nanoTime() - t0 < seconds * 1_000_000_000L) {
+            int n = l.write(block, 0, block.length);
+            s.written.addAndGet(n / FRAME_BYTES);
+            if (n == 0) {
+                sleep(1);
+            }
+        }
+        s.finish();
+        l.close();
+        long first = s.eventTime("first-write");
+        String file = "drift-" + rate;
+        try (BufferedWriter w = Files.newBufferedWriter(out.resolve(file + ".csv"), StandardCharsets.UTF_8)) {
+            w.write("t_s,pos_frames\n");
+            for (ProbeSampler.Row r : s.rows) {
+                w.write(f("%.4f,%d%n", (r.tNanos() - first) / 1e9, r.pos()));
+            }
+        }
+        List<ProbeSampler.Row> steady = new ArrayList<>();
+        for (ProbeSampler.Row r : s.rows) {
+            if ((r.tNanos() - first) / 1e9 >= 10.0) {
+                steady.add(r);
+            }
+        }
+        double[] x = new double[steady.size()];
+        double[] y = new double[steady.size()];
+        for (int i = 0; i < x.length; i++) {
+            x[i] = (steady.get(i).tNanos() - first) / 1e9;
+            y[i] = steady.get(i).pos();
+        }
+        double[] fit = ProbeSampler.fit(x, y);
+        double maxRes = 0;
+        for (int i = 0; i < x.length; i++) {
+            maxRes = Math.max(maxRes, Math.abs(y[i] - (fit[0] * x[i] + fit[1])));
+        }
+        StringBuilder diffs = new StringBuilder();
+        for (int mark : new int[] {60, 120, 300}) {
+            if (mark > seconds) {
+                continue;
+            }
+            ProbeSampler.Row best = null;
+            for (ProbeSampler.Row r : s.rows) {
+                if (best == null || Math.abs((r.tNanos() - first) / 1e9 - mark)
+                        < Math.abs((best.tNanos() - first) / 1e9 - mark)) {
+                    best = r;
+                }
+            }
+            double wall = (best.tNanos() - first) / 1e9;
+            diffs.append(f("  at %d s (sample at %.2f s): position %d = %.1f ms of audio, minus wall = %+.1f ms%n", mark,
+                    wall, best.pos(), framesToMs(best.pos(), rate), framesToMs(best.pos(), rate) - wall * 1000.0));
+        }
+        System.out.println(f("DRIFT %d Hz over %d s (%d samples every ~100 ms, fit from 10 s): slope %.3f frames/s -> %+.1f ppm;"
+                + " max residual %.2f ms%n%s", rate, seconds, s.rows.size(), fit[0], (fit[0] / rate - 1.0) * 1e6,
+                framesToMs(maxRes, rate), diffs));
     }
 }

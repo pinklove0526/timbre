@@ -45,12 +45,18 @@ final class ProbeSampler implements Runnable {
 
     private final SourceDataLine line;
     private final int frameSize;
+    private final long intervalNanos;
     private volatile boolean stop;
     private Thread thread;
 
     ProbeSampler(SourceDataLine line) {
+        this(line, 5_000_000L);
+    }
+
+    ProbeSampler(SourceDataLine line, long intervalNanos) {
         this.line = line;
         this.frameSize = line.getFormat().getFrameSize();
+        this.intervalNanos = intervalNanos;
     }
 
     void begin() {
@@ -83,7 +89,7 @@ final class ProbeSampler implements Runnable {
             } catch (RuntimeException e) {
                 break;
             }
-            LockSupport.parkNanos(5_000_000L);
+            LockSupport.parkNanos(intervalNanos);
         }
     }
 
