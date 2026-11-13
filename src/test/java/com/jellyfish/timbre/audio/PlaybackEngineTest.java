@@ -50,15 +50,15 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(120)
 class PlaybackEngineTest {
 
-    private static final int RATE = 8000; // device buffer 1600 frames (200 ms)
-    private static final PlaybackEngine.State STOPPED = PlaybackEngine.State.STOPPED;
+    static final int RATE = 8000; // device buffer 1600 frames (200 ms)
+    static final PlaybackEngine.State STOPPED = PlaybackEngine.State.STOPPED;
     private static final PlaybackEngine.State PLAYING = PlaybackEngine.State.PLAYING;
     private static final PlaybackEngine.State PAUSED = PlaybackEngine.State.PAUSED;
 
     // ------------------------------------------------------------------ reference oracle
 
     /** Planar test data kept next to the source so the oracle never touches production mixing code. */
-    private record Data(float[][] ch) {
+    record Data(float[][] ch) {
         MemorySampleSource source() {
             return MemorySampleSource.copyOf(RATE, ch);
         }
@@ -68,7 +68,7 @@ class PlaybackEngineTest {
         }
     }
 
-    private static Data noise(long seed, int channels, int frames, float range) {
+    static Data noise(long seed, int channels, int frames, float range) {
         Random r = new Random(seed);
         float[][] d = new float[channels][frames];
         for (float[] c : d) {
@@ -79,13 +79,13 @@ class PlaybackEngineTest {
         return new Data(d);
     }
 
-    private static Data constant(float value, int frames) {
+    static Data constant(float value, int frames) {
         float[][] d = new float[1][frames];
         Arrays.fill(d[0], value);
         return new Data(d);
     }
 
-    private static MixPlan planOf(Data... data) {
+    static MixPlan planOf(Data... data) {
         List<SampleSource> s = new ArrayList<>();
         for (Data d : data) {
             s.add(d.source());
@@ -101,7 +101,7 @@ class PlaybackEngineTest {
         return (int) Math.max(-32768, Math.min(32767, v));
     }
 
-    private static byte[] oracle(long from, Data... data) {
+    static byte[] oracle(long from, Data... data) {
         int len = 0;
         for (Data d : data) {
             len = Math.max(len, d.frames());
@@ -128,7 +128,7 @@ class PlaybackEngineTest {
 
     // ------------------------------------------------------------------ rig
 
-    private static final class Rig {
+    static final class Rig {
         final List<FakeAudioSink> sinks = Collections.synchronizedList(new ArrayList<>());
         final PlaybackEngine engine;
         final List<String> events = Collections.synchronizedList(new ArrayList<>());
@@ -139,9 +139,14 @@ class PlaybackEngineTest {
         volatile AudioDeviceException openFailure;
 
         Rig(FakeAudioSink.Pace pace, FakeAudioSink.Artifacts art, double speed, boolean virtualClock) {
+            this(pace, art, speed, virtualClock, java.util.EnumSet.of(FakeAudioSink.Quirk.DRAIN_RETURNS_WHEN_STOPPED));
+        }
+
+        Rig(FakeAudioSink.Pace pace, FakeAudioSink.Artifacts art, double speed, boolean virtualClock,
+            java.util.Set<FakeAudioSink.Quirk> quirks) {
             LongSupplier clock = virtualClock ? () -> last().nanoTime() : System::nanoTime;
             engine = new PlaybackEngine(() -> {
-                FakeAudioSink f = new FakeAudioSink(pace, art, speed);
+                FakeAudioSink f = new FakeAudioSink(pace, art, speed, quirks);
                 if (openFailure != null) {
                     f.failOpenWith(openFailure);
                 }
@@ -185,9 +190,14 @@ class PlaybackEngineTest {
 
         /** Advances the manual fake in small steps until the run ends. */
         void pumpUntilEnd() throws InterruptedException {
+            pumpUntilEnd(2_000_000L);
+        }
+
+        /** Same, advancing the device by {@code stepNanos} per step. */
+        void pumpUntilEnd(long stepNanos) throws InterruptedException {
             long deadline = System.nanoTime() + 10_000_000_000L;
             while (!ended.await(1, TimeUnit.MILLISECONDS)) {
-                last().advance(2_000_000L);
+                last().advance(stepNanos);
                 assertTrue(System.nanoTime() < deadline, "run did not end while pumping; events=" + events);
             }
         }
@@ -201,12 +211,24 @@ class PlaybackEngineTest {
         }
     }
 
+    /** Silence after the project: 1.25 device buffers (1600 frames at 8000 Hz), see PlaybackEngine.PAD_BUFFERS. */
+    static final int PAD_BYTES = 4 * (int) Math.ceil(1.25 * 1600);
+
+    /** The received stream is the oracle audio followed by exactly the documented pad of zeros. */
+    static void assertStream(byte[] expected, byte[] got, String message) {
+        assertEquals(expected.length + PAD_BYTES, got.length, message + ": length (audio + pad)");
+        assertArrayEquals(expected, Arrays.copyOf(got, expected.length), message + ": audio bytes");
+        for (int i = expected.length; i < got.length; i++) {
+            assertEquals(0, got[i], message + ": pad byte " + (i - expected.length));
+        }
+    }
+
     private static boolean audioThreadAlive() {
         return Thread.getAllStackTraces().keySet().stream()
                 .anyMatch(t -> t.getName().equals("timbre-audio") && t.isAlive());
     }
 
-    private static void assertNoAudioThread() throws InterruptedException {
+    static void assertNoAudioThread() throws InterruptedException {
         long deadline = System.nanoTime() + 2_000_000_000L;
         while (audioThreadAlive() && System.nanoTime() < deadline) {
             Thread.sleep(5);
@@ -225,7 +247,7 @@ class PlaybackEngineTest {
         assertTrue(rig.engine.play(0));
         rig.awaitEnd();
         rig.engine.close();
-        assertArrayEquals(oracle(0, a, b), rig.last().received());
+        assertStream(oracle(0, a, b), rig.last().received(), "whole project");
         assertEquals(1, rig.finished.get(), "finished() exactly once");
         assertEquals(STOPPED, rig.engine.state());
         assertEquals(0, rig.engine.positionFrames());
@@ -250,7 +272,7 @@ class PlaybackEngineTest {
             assertEquals(from, rig.engine.startFrame());
             rig.awaitEnd();
             rig.engine.close();
-            assertArrayEquals(oracle(from, a, b), rig.last().received(), "from " + from);
+            assertStream(oracle(from, a, b), rig.last().received(), "from " + from);
             assertEquals(from, rig.engine.positionFrames(), "cursor returns to where playback started");
         }
     }
@@ -281,7 +303,7 @@ class PlaybackEngineTest {
             assertTrue(rig.engine.play(0));
             rig.awaitEnd();
             rig.engine.close();
-            assertArrayEquals(expected, rig.last().received(), "iteration " + iteration);
+            assertStream(expected, rig.last().received(), "iteration " + iteration);
             assertTrue(rig.engine.stats().shortWrites() > 0 || iteration > 0 || true);
         }
     }
@@ -298,7 +320,7 @@ class PlaybackEngineTest {
         rig.engine.close();
         assertTrue(rig.engine.stats().shortWrites() >= 3, "short writes " + rig.engine.stats().shortWrites());
         assertTrue(rig.engine.stats().blocksRendered() >= 3);
-        assertArrayEquals(oracle(0, a), rig.last().received());
+        assertStream(oracle(0, a), rig.last().received(), "short writes");
     }
 
     // ------------------------------------------------------------------ pause and resume
@@ -337,7 +359,7 @@ class PlaybackEngineTest {
             }
             rig.awaitEnd();
             rig.engine.close();
-            assertArrayEquals(expected, rig.last().received(), "iteration " + iteration);
+            assertStream(expected, rig.last().received(), "iteration " + iteration);
         }
         assertTrue(pauses >= 25, "the property test paused only " + pauses + " times");
     }
@@ -409,7 +431,7 @@ class PlaybackEngineTest {
 
     @Test
     void closeWhileDrainIsBlockedReturnsWithinTwoSeconds() throws Exception {
-        Data a = noise(13, 2, 3000, 0.5f); // fits the fake's queue, so the writer reaches drain()
+        Data a = noise(13, 2, 1200, 0.5f); // with the 250 ms pad (2000 frames) it fits the fake's 3200-frame queue, so the writer reaches drain()
         Rig rig = new Rig(FakeAudioSink.Pace.MANUAL, FakeAudioSink.Artifacts.PULSE_LIKE, 1, false);
         rig.engine.setPlan(planOf(a));
         assertTrue(rig.engine.play(0));
@@ -482,7 +504,7 @@ class PlaybackEngineTest {
         rig.pumpUntilEnd();
         rig.engine.close();
         byte[] got = rig.last().received();
-        assertEquals(8192 * 4, got.length);
+        assertEquals(8192 * 4 + PAD_BYTES, got.length, "audio plus pad");
         int transitions = 0;
         int previous = -1;
         for (int block = 0; block < 8; block++) {

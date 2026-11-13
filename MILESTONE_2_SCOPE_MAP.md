@@ -52,16 +52,35 @@ The device clock and the system clock agree to a few ppm over minutes, so the Ph
 
 
 ## Manual acceptance (user)
-Generated files (git-ignored, regenerate with `java -cp target/classes:target/test-classes com.jellyfish.timbre.audio.probe.ManualKitGenerator <dir>` after `mvn -B -o test-compile`): `beeps_stereo_44100.wav` (20 s, one rising-pitch beep every 250 ms with 10 ms gaps, the pitch cycles every 20 beeps), `pan_test_mono_44100.wav` (mono tone), `bass_mono_48000.wav` (48 kHz, for the rate-mismatch error). All about -24 dBFS. Start the app with `mvn javafx:run` or `java -jar target/timbre-<version>-universal.jar`.
+Generated files (git-ignored, regenerate with `java -cp target/classes:target/test-classes com.jellyfish.timbre.audio.probe.ManualKitGenerator <dir>` after `mvn -B -o test-compile`): `beeps_stereo_44100.wav` (20 s, one rising-pitch beep every 250 ms with 10 ms gaps, the pitch cycles every 20 beeps), `pan_test_mono_44100.wav` (mono tone), `tone_mono_48000.wav` (48 kHz, 10 s, 440 Hz). All about -24 dBFS. Start the app with `mvn javafx:run` or `java -jar target/timbre-<version>-universal.jar`.
 - [ ] File > Open WAV: open `beeps_stereo_44100.wav` and press Play.
 - [ ] The time readout and the slider advance smoothly (no stalls, no jumps).
 - [ ] Pause and resume about 20 times at random points: no skipped or repeated beeps (a skip or repeat is heard as a pitch jump) and no loud clicks.
 - [ ] Stop returns the cursor and the slider to the start.
 - [ ] While stopped, drag the slider to the middle and press Play: playback starts there.
 - [ ] Open `pan_test_mono_44100.wav` as a second track: both tracks are audible, the mono track is centered.
-- [ ] Opening `bass_mono_48000.wav` shows the sample-rate error and does not change the project.
+- [ ] 48 kHz path: with no tracks loaded, open `tone_mono_48000.wav` ALONE and play: the tone is audible, the readout advances, no error. Then Clear tracks.
+- [ ] Open `beeps_stereo_44100.wav` and play: the line is reopened at 44.1 kHz and the beeps play.
+- [ ] With the beeps loaded, opening `tone_mono_48000.wav` shows the sample-rate error and does not change the project.
 - [ ] Close the window while playing: the process ends (check `ps` for a lingering `java`).
 - [ ] Play to the end: the cursor returns to the start and nothing hangs.
+
+## Tail handling (Milestone 2 hardening, 2026-11-13)
+Question: what happens when `pause()` arrives during the engine's final `drain()`, and when a resume leaves only a shallow queue? Measured silently (zeros) on the default route, 44100 Hz, 200 ms buffer; data in `build-logs/m2h/tail.csv`, `tailpad.csv` (excerpts: `src/test/resources/.../traces/tail-h1.csv`, `tailpad-h1.csv`).
+
+**Matrix** (scenario A: `stop()` 20 ms into a drain; B: `stop()` halfway through the tail; restart 300 ms later with K = 0, 1 or 4 extra 1024-frame zero blocks written after the restart; verdict OK if `drain()` returns within the expected remaining time + 250 ms, STUCK if it waits for the JDK's ~500 ms give-up):
+- `drain()` on a stopped line returned 0.2 to 0.3 ms after `stop()` in all 12 A cases (so a pause during a drain does make `drain()` return).
+- Queued depth at the restart of 50 to 180 ms was STUCK in every case (A100 K0/1/4, A200 K0, B100 K0/1/4, B200 K0/1, B350 K0). From 193 ms (B200 K4) up to 422 ms it restarted every time. Tails of 30 ms (depth 10 to 108 ms) were always fine.
+- Pre-queued depth sweep (3 repeats each, `tailpad.csv`): 100, 150 and 175 ms STUCK 3 of 3; 200, 225, 250 and 300 ms OK 3 of 3. The threshold is about one buffer (between 175 and 200 ms).
+- A stuck line shows frozen position, `isRunning`/`isActive` false and `drain()` returning after about 500 ms with the audio unplayed. The position cannot prove playback (it jumps to played + one buffer at `stop()`), so the verdict is the drain time.
+
+**Engine before the fix** (`build-logs/m2h/01-engine-today.txt`): the plain case (pause during the drain of a deep queue) already worked, because `pause()` sets `paused` before it stops the line. Two gaps: (1) a pause followed by a quick resume could make the drain look complete (`paused` already false again); this could not be reproduced on the fake (0 of 150 tries) but follows from the code; (2) after a resume with a shallow queue the line does not restart, `drain()` gives up after about 500 ms, and `finished()` fired with the tail unplayed (reproduced with the fake: 1600 of 2400 frames played).
+
+**Decision** (rules 1 and 2 of the task, no different strategy needed):
+1. `drain()` returning is not proof of completion. After it returns the engine checks `paused` and a pause counter incremented by every `pause()`; if a pause happened since the drain began (even if already resumed) it waits out the tail again; a stop or close aborts quietly; `finished()` fires only when the drain completed with no pause since it began.
+2. A silence pad of 1.25 device buffers (250 ms) is written after the last real audio and before the drain. It is never part of the project audio (the fake-sink tests check the audio bytes against an oracle and that the rest is exactly the pad, zeros only). Evidence: restart is reliable from 200 ms of queued audio and unreliable at 175 ms or less, so 250 ms leaves 50 ms of margin; with the pad queued, any pause before the real audio ends leaves at least that much queued. The pad also delays `finished()` by up to 250 ms.
+
+**Residual behavior:** a pause during the pad itself (after the last real sample) can leave the line stuck; the drain then gives up after about 500 ms and the run finishes. Only silence is lost. The pad size scales with the granted device buffer.
 
 ## Phase A findings
 Measured on 2026-11-10 with the dev tool `AudioProbe` (JDK 17.0.2, Linux 6.18, PulseAudio 17.0 with the ALSA pulse plugin; default sink `alsa_output.pci-0000_00_1f.3.analog-stereo`, 44100 Hz s16 stereo default, HDA Intel PCH / Realtek ALC256). Raw data: `build-logs/m2-probe/` (git-ignored). Audible budget used: 16.8 s of -24 dBFS tone.

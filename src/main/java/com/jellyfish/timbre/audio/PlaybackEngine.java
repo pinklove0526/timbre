@@ -15,6 +15,7 @@
  */
 package com.jellyfish.timbre.audio;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -33,7 +34,9 @@ import java.util.function.Supplier;
  * 1024-frame blocks and writes them with blocking writes; the unwritten remainder of a short write is
  * kept and retried, never dropped; the thread parks while paused; {@code flush()} is never used; the
  * first block is rendered before the device is started; at the natural end the final partial block is
- * written and the device drained. Pause is {@link AudioSink#stop()}/{@link AudioSink#start()} on the open
+ * written, followed by a silence pad of {@link #PAD_BUFFERS} device buffers (never part of the audio), and
+ * the device is drained. {@code drain()} returning is not taken as completion: a pause that arrived while it
+ * waited (even if already resumed) makes the engine wait out the tail again. Pause is {@link AudioSink#stop()}/{@link AudioSink#start()} on the open
  * device; stop closes the device and the next play reopens it.
  *
  * <p><b>Threading:</b> control methods ({@code play}, {@code pause}, {@code resume}, {@code stop},
@@ -58,6 +61,14 @@ public final class PlaybackEngine {
     /** Frames rendered per block. */
     static final int BLOCK_FRAMES = 1024;
     private static final double BUFFER_SECONDS = 0.2;
+    /**
+     * Silence appended after the last real audio, in device buffers. Measured on the default Java Sound route
+     * (hardening probe H1, build-logs/m2h/tail*.csv): after stop() then start() the line does not run again if
+     * fewer than about one buffer (200 ms) of audio is queued (stuck at 175 ms or less in 3 of 3 tries, restarted at
+     * 200 ms or more in 3 of 3). With 1.25 buffers (250 ms) of padding queued behind the audio, any pause before
+     * the end of the real audio leaves at least that much queued, with 50 ms of margin.
+     */
+    static final double PAD_BUFFERS = 1.25;
     private static final long JOIN_MILLIS = 2000;
     private static final int FRAME_BYTES = 4;
 
@@ -192,6 +203,7 @@ public final class PlaybackEngine {
                 r.clock.estimate(now, safePosition(r), r.framesWritten);
                 r.clock.onPause(now);
             }
+            r.pauseRequests = r.pauseRequests + 1; // before the flag, so a drain that returns sees it
             r.paused = true;
             r.sink.stop();
             r.awaitNotInWrite();
@@ -358,6 +370,7 @@ public final class PlaybackEngine {
         final Thread thread;
         final long bufferNanos;
         volatile boolean paused;
+        volatile int pauseRequests;
         volatile boolean stopRequested;
         volatile boolean inWrite;
         volatile long framesWritten;
@@ -447,18 +460,25 @@ public final class PlaybackEngine {
                     renderNext();
                     blocksRendered.incrementAndGet();
                 }
+                if (!writePad()) {
+                    return;
+                }
                 while (true) {
                     if (stopRequested) {
                         return;
                     }
+                    int pausesBefore = pauseRequests;
                     sink.drain();
                     if (stopRequested) {
                         return;
                     }
-                    if (!paused) {
-                        break;
+                    if (paused || pauseRequests != pausesBefore) {
+                        // drain() returned because the line was stopped for a pause (possibly already resumed):
+                        // that is not completion, so wait out the tail again
+                        waitWhilePaused();
+                        continue;
                     }
-                    waitWhilePaused();
+                    break;
                 }
                 end(null);
             } catch (Throwable t) {
@@ -466,6 +486,21 @@ public final class PlaybackEngine {
                     end(t);
                 }
             }
+        }
+
+        /** Writes the silence pad after the last real audio. @return false if stopped */
+        private boolean writePad() {
+            long padFrames = (long) Math.ceil(PAD_BUFFERS * sink.bufferFrames());
+            Arrays.fill(pcm, (byte) 0);
+            while (padFrames > 0) {
+                int n = (int) Math.min(BLOCK_FRAMES, padFrames);
+                pendingBytes = n * FRAME_BYTES;
+                if (!writePending()) {
+                    return false;
+                }
+                padFrames -= n;
+            }
+            return true;
         }
 
         /** Writes the pending block, retrying the remainder of short writes. @return false if stopped */

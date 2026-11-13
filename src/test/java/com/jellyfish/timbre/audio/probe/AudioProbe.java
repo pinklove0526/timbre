@@ -39,8 +39,8 @@ import javax.sound.sampled.SourceDataLine;
 /**
  * Developer tool that measures the audio output path of this machine. Not a test, not shipped.
  *
- * <p>Usage: {@code AudioProbe <env|mixers|open|clock|pause|flush|drain|underrun|reuse|retain|unblock|drift|all>
- * [--consent] [--out DIR] [--rate HZ --seconds N]}. The silent modes retain, unblock and drift write only digital
+ * <p>Usage: {@code AudioProbe <env|mixers|open|clock|pause|flush|drain|underrun|reuse|retain|unblock|drift|tail|all>
+ * [--consent] [--out DIR] [--rate HZ --seconds N]}. The silent modes retain, unblock, drift and tail write only digital
  * zeros ({@code all} does not include them; drift runs for minutes). Audible modes (clock, pause, flush, drain, underrun, reuse) refuse to run without
  * {@code --consent}, which must only be given after the user agreed; they play quiet (-24 dBFS) tones
  * on the default output path and stop when the 30 s audible budget in {@code sound-ledger.txt} is used up.
@@ -147,6 +147,8 @@ public final class AudioProbe {
                 case "retain" -> retain();
                 case "unblock" -> unblock();
                 case "drift" -> drift();
+                case "tail" -> tail();
+                case "tailpad" -> tailPad();
                 default -> {
                     System.err.println("unknown mode " + m);
                     System.exit(2);
@@ -1023,5 +1025,130 @@ public final class AudioProbe {
         System.out.println(f("DRIFT %d Hz over %d s (%d samples every ~100 ms, fit from 10 s): slope %.3f frames/s -> %+.1f ppm;"
                 + " max residual %.2f ms%n%s", rate, seconds, s.rows.size(), fit[0], (fit[0] / rate - 1.0) * 1e6,
                 framesToMs(maxRes, rate), diffs));
+    }
+
+    // ------------------------------------------------------------------ tail (silent)
+
+    private static void tail() throws Exception {
+        int rate = 44100;
+        try (BufferedWriter w = Files.newBufferedWriter(out.resolve("tail.csv"), StandardCharsets.UTF_8)) {
+            w.write("scenario,T_ms,K_blocks,depth_ms_at_restart,drain1_returned_after_stop_ms,flags_50ms_after_restart,"
+                    + "pos_at_restart,pos_plus_100ms,pos_plus_500ms,pos_at_1500ms,reached_ms,drain_total_ms,"
+                    + "expected_remaining_ms,verdict\n");
+            for (String scenario : new String[] {"A", "B"}) {
+                for (int tMs : new int[] {30, 100, 200, 350}) {
+                    for (int k : new int[] {0, 1, 4}) {
+                        w.write(tailCase(scenario, tMs, k, rate));
+                        w.flush();
+                    }
+                }
+            }
+        }
+    }
+
+    private static void tailPad() throws Exception {
+        try (BufferedWriter w = Files.newBufferedWriter(out.resolve("tailpad.csv"), StandardCharsets.UTF_8)) {
+            w.write("scenario,T_ms,K_blocks,depth_ms_at_restart,drain1_returned_after_stop_ms,flags_50ms_after_restart,"
+                    + "pos_at_restart,pos_plus_100ms,pos_plus_500ms,pos_at_1500ms,reached_ms,drain_total_ms,"
+                    + "expected_remaining_ms,verdict\n");
+            for (int depth : new int[] {100, 150, 175, 200, 225, 250, 300}) {
+                for (int rep = 0; rep < 3; rep++) {
+                    w.write(tailCase("P", depth + 60, 0, 44100));
+                    w.flush();
+                }
+            }
+        }
+    }
+
+    private static String tailCase(String scenario, int tMs, int k, int rate) throws Exception {
+        SourceDataLine l = freshLine(rate);
+        l.start();
+        int tFrames = rate * tMs / 1000;
+        byte[] zeros = new byte[tFrames * FRAME_BYTES];
+        l.write(zeros, 0, zeros.length);
+        double drain1 = -1;
+        double remaining;
+        if (scenario.equals("A")) {
+            long[] drainEnd = new long[1];
+            Thread d = new Thread(() -> {
+                l.drain();
+                drainEnd[0] = System.nanoTime();
+            }, "probe-drainer");
+            d.start();
+            sleep(20);
+            long tStop = System.nanoTime();
+            l.stop();
+            d.join(GUARD_MS);
+            if (d.isAlive()) {
+                l.close();
+                d.join(1000);
+            } else {
+                drain1 = ms(drainEnd[0] - tStop);
+            }
+            remaining = tMs - 20;
+        } else if (scenario.equals("P")) { // pre-queued depth: stop after 60 ms, tMs - 60 ms remain
+            sleep(60);
+            l.stop();
+            remaining = tMs - 60;
+        } else {
+            sleep(tMs / 2);
+            l.stop();
+            remaining = tMs - tMs / 2;
+        }
+        sleep(300);
+        long posRestart = l.getLongFramePosition();
+        ProbeSampler s = new ProbeSampler(l);
+        s.begin();
+        long tStart = System.nanoTime();
+        s.event("start");
+        l.start();
+        long writtenFrames = tFrames;
+        for (int i = 0; i < k; i++) {
+            l.write(new byte[BLOCK_FRAMES * FRAME_BYTES], 0, BLOCK_FRAMES * FRAME_BYTES);
+            writtenFrames += BLOCK_FRAMES;
+        }
+        double expected = remaining + framesToMs(k * BLOCK_FRAMES, rate);
+        Timed drain = guarded(() -> {
+            l.drain();
+            return null;
+        }, l::close);
+        double drainTotal = ms(System.nanoTime() - tStart);
+        while (ms(System.nanoTime() - tStart) < 1500) {
+            sleep(10);
+        }
+        s.finish();
+        long finalWritten = writtenFrames;
+        String flags50 = "n/a";
+        long pos100 = -1;
+        long pos500 = -1;
+        long pos1500 = s.rows.isEmpty() ? -1 : s.rows.get(s.rows.size() - 1).pos();
+        double reached = -1;
+        for (ProbeSampler.Row r : s.rows) {
+            double t = ms(r.tNanos() - tStart);
+            if (t < 0) {
+                continue;
+            }
+            if (flags50.equals("n/a") && t >= 50) {
+                flags50 = "running=" + r.running() + "/active=" + r.active();
+            }
+            if (pos100 < 0 && t >= 100) {
+                pos100 = r.pos();
+            }
+            if (pos500 < 0 && t >= 500) {
+                pos500 = r.pos();
+            }
+            if (reached < 0 && r.pos() >= finalWritten) {
+                reached = t;
+            }
+        }
+        guarded(() -> {
+            l.close();
+            return null;
+        }, () -> { });
+        String verdict = drain.timedOut ? "WATCHDOG" : drainTotal <= expected + 250 ? "OK" : "STUCK";
+        String row = f("%s,%d,%d,%.1f,%.1f,%s,%d,%d,%d,%d,%.1f,%.1f,%.1f,%s%n", scenario, tMs, k, expected, drain1,
+                flags50, posRestart, pos100, pos500, pos1500, reached, drainTotal, expected, verdict);
+        System.out.print("TAIL " + row);
+        return row;
     }
 }

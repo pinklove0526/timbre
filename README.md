@@ -24,15 +24,15 @@ mvn test -Dtimbre.testWavDir=<directory>     # also decode every .wav in a direc
 mvn test -Dtest=ExternalToolInteropTest -Dtimbre.interop=true   # compare against ffmpeg (ffmpeg must be installed)
 mvn test -Dtest=RealDevicePlaybackTest -Dtimbre.audioDevice=true   # plays quiet tones through the default output
 ```
-Three properties are opt-in; without them those tests are skipped. `timbre.audioDevice=true` runs `RealDevicePlaybackTest`, which plays about 2 s of quiet tone through the default output (run it only if you are happy to hear that).
+Three properties are opt-in; without them those tests are skipped. `timbre.audioDevice=true` runs `RealDevicePlaybackTest`, which plays about 5 s of quiet tone through the default output (48 kHz and 44.1 kHz) (run it only if you are happy to hear that).
 
 ### Developer tools
 `AudioProbe` measures this machine's audio output path (not a test, not in the jar):
 ```
 mvn -B -o test-compile
-java -cp target/classes:target/test-classes com.jellyfish.timbre.audio.probe.AudioProbe <env|mixers|open|clock|pause|flush|drain|underrun|reuse|retain|unblock|drift|all> [--out DIR]
+java -cp target/classes:target/test-classes com.jellyfish.timbre.audio.probe.AudioProbe <env|mixers|open|clock|pause|flush|drain|underrun|reuse|retain|unblock|drift|tail|tailpad|all> [--out DIR]
 ```
-The modes env, mixers, open, retain, unblock and drift are silent (retain, unblock and drift write only digital zeros; drift runs for minutes and takes `--rate HZ --seconds N`). The others play quiet tones through the default output and only run with `--consent`; give it only after you have agreed to the sound. Capture devices are never opened.
+The modes env, mixers, open, retain, unblock, drift, tail and tailpad are silent (the last five write only digital zeros; drift runs for minutes and takes `--rate HZ --seconds N`). The others play quiet tones through the default output and only run with `--consent`; give it only after you have agreed to the sound. Capture devices are never opened.
 
 The universal jar bundles JavaFX natives for Windows, Linux and macOS (x64 only).
 

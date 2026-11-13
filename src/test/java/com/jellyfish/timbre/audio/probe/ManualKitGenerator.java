@@ -26,7 +26,8 @@ import java.nio.file.Path;
  * Dev tool (not a test, not shipped) that writes the WAV files for the Milestone 2 manual listening test:
  * {@code beeps_stereo_44100.wav} (20 s, one beep every 250 ms with a 10 ms gap, rising pitch in a 20-beep
  * cycle so a skipped or repeated segment is heard as a pitch jump), {@code pan_test_mono_44100.wav} (mono
- * tone) and {@code bass_mono_48000.wav} (for the sample-rate mismatch error). All about -24 dBFS.
+ * tone) and {@code tone_mono_48000.wav} (48 kHz, 10 s, 440 Hz, for the 48 kHz path and the sample-rate mismatch error). All
+ * about -24 dBFS with 20 ms fades.
  *
  * <p>Usage: {@code ManualKitGenerator <output directory>}.
  */
@@ -66,7 +67,7 @@ public final class ManualKitGenerator {
         }
         write(dir.resolve("beeps_stereo_44100.wav"), rate, beeps, beeps.clone());
         write(dir.resolve("pan_test_mono_44100.wav"), rate, tone(rate, 330.0, 8.0));
-        write(dir.resolve("bass_mono_48000.wav"), 48000, tone(48000, 110.0, 3.0));
+        write(dir.resolve("tone_mono_48000.wav"), 48000, tone(48000, 440.0, 10.0));
         System.out.println("wrote 3 files to " + dir.getFileName());
     }
 
