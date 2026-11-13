@@ -46,7 +46,8 @@
 
 ## Milestone status
 - M0 Skeleton: closed, window confirmed by user.
-- M1 Audio core: implemented, verified (see build-logs/m1), awaiting user review.
+- M1 Audio core: closed (M1 and its hardening merged to develop by the user).
+- M2 Playback: in progress, Phase A (device probe).
 
 ## Recorded retractions
 - 2026-11-09: Oracle public Maven repository (oracle-public) removed from the Maven settings (repository, pluginRepository, profile and activeProfile). Reason: every artifact came from Maven Central; the Oracle repo supplied nothing and only added ~150 not-found warnings per cold build. Re-add it only if an Oracle-hosted artifact is ever needed.
@@ -54,10 +55,15 @@
 
 - 2026-11-10: `Clip.split` returning `List<Clip>` is replaced by the nested record `Clip.Split(Clip left, Clip right)`. Reason: a two-element list says nothing about which element is which and allows indexing mistakes; the record names the halves and cannot have the wrong size.
 
+## M2 Phase A (branch feature/pinklove0526/m2-audio-probe, 2026-11-10)
+- New dev tool: `src/test/java/com/jellyfish/timbre/audio/probe/AudioProbe.java` (with `ProbeSampler`, `ProbeTone`); it is not a test and not in the shipped jar. Audible modes need `--consent`; a ledger caps total sound at 30 s.
+- Findings and recommendations: see MILESTONE_2_SCOPE_MAP.md, "Phase A findings". Raw logs and CSVs: build-logs/m2-probe (git-ignored).
+- Deviations: the 96000 Hz clock run was added because the default route supports it (16.8 s of sound used, under the 30 s cap); drift could not be resolved with 3 s runs (stated in the findings).
+
 ## Deferred
 - Apple Silicon (mac-aarch64) and Linux aarch64 jars: separate per-architecture jars are needed because their native file names collide with the x64 ones.
 - Runtime check of the universal jar on Windows and macOS: not done.
-- Audio stack on the development machine is PulseAudio with the ALSA pulse plugin and no ALSA PipeWire plugin. At the very start of Milestone 2, probe the Java Sound mixers (list them, test a short playback and a short capture) instead of assuming it works.
+- Audio output probe: done in M2 Phase A (findings in MILESTONE_2_SCOPE_MAP.md). Still unprobed: capture devices (forbidden in Phase A; needed at the start of Milestone 5), clock drift over minutes, the true audible output latency (the probe only sees the line clock), behavior under CPU load, other buffer sizes, Windows and macOS.
 - File-backed `SampleSource` (needed before hour-long files).
 - Resampler (needed to import files with a different rate than the project).
 - RF64 and files over 4 GiB.
