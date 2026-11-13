@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Timeout;
 /**
  * Opt-in test through the real default output. Runs only with {@code -Dtimbre.audioDevice=true}, which must
  * only be set after the user agreed to a few seconds of quiet tone (about -24 dBFS, 20 ms fades, about 2 s
- * in total). Otherwise it is skipped.
+ * in total per test class run of about 4.5 s). Otherwise it is skipped.
  */
 @Timeout(60)
 class RealDevicePlaybackTest {
@@ -38,15 +38,19 @@ class RealDevicePlaybackTest {
     private static final int RATE = 44100;
 
     private static MixPlan oneSecondTone() {
-        float[] tone = new float[RATE];
-        int fade = RATE * 20 / 1000;
+        return oneSecondTone(RATE);
+    }
+
+    private static MixPlan oneSecondTone(int rate) {
+        float[] tone = new float[rate];
+        int fade = rate * 20 / 1000;
         double amp = Math.pow(10.0, -24.0 / 20.0);
         for (int i = 0; i < tone.length; i++) {
             double env = i < fade ? (double) i / fade : i >= tone.length - fade ? (double) (tone.length - 1 - i) / fade
                     : 1.0;
-            tone[i] = (float) (Math.sin(2 * Math.PI * 440.0 * i / RATE) * amp * env);
+            tone[i] = (float) (Math.sin(2 * Math.PI * 440.0 * i / rate) * amp * env);
         }
-        return MixPlan.of(List.of(MemorySampleSource.copyOf(RATE, new float[][] {tone})));
+        return MixPlan.of(List.of(MemorySampleSource.copyOf(rate, new float[][] {tone})));
     }
 
     private static boolean audioThreadAlive() {
@@ -114,5 +118,65 @@ class RealDevicePlaybackTest {
             Thread.sleep(5);
         }
         assertFalse(audioThreadAlive(), "no audio thread may be left");
+    }
+
+    private static PlaybackEngine engineWithFinishLatch(CountDownLatch[] latch) {
+        PlaybackEngine engine = new PlaybackEngine();
+        engine.addListener(new PlaybackListener() {
+            @Override
+            public void finished() {
+                latch[0].countDown();
+            }
+        });
+        return engine;
+    }
+
+    @Test
+    void aPauseJustBeforeTheEndStillPlaysTheTailAndFinishes() throws Exception {
+        assumeTrue("true".equals(System.getProperty("timbre.audioDevice")),
+                "real-device test is opt-in: run with -Dtimbre.audioDevice=true after agreeing to a few quiet tones");
+        CountDownLatch[] latch = {new CountDownLatch(1)};
+        PlaybackEngine engine = engineWithFinishLatch(latch);
+        engine.setPlan(oneSecondTone());
+        assertTrue(engine.play(0));
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        long target = RATE - RATE / 4; // 250 ms before the end
+        while (engine.positionFrames() < target) {
+            assertTrue(System.nanoTime() < deadline, "position never reached 750 ms");
+            Thread.sleep(2);
+        }
+        engine.pause();
+        assertEquals(PlaybackEngine.State.PAUSED, engine.state());
+        Thread.sleep(300);
+        assertEquals(1, latch[0].getCount(), "finished() must not arrive while paused");
+        long resumedAt = System.nanoTime();
+        engine.resume();
+        assertTrue(latch[0].await(3, TimeUnit.SECONDS), "finished() must arrive after the resume");
+        System.out.printf("REAL-DEVICE tail pause: finished %.0f ms after resume%n",
+                (System.nanoTime() - resumedAt) / 1e6);
+        assertEquals(PlaybackEngine.State.STOPPED, engine.state());
+        assertEquals(0, engine.positionFrames(), "cursor returns to the start frame");
+        engine.close();
+    }
+
+    @Test
+    void oneEnginePlaysA48kHzProjectAndThenA44kHzProject() throws Exception {
+        assumeTrue("true".equals(System.getProperty("timbre.audioDevice")),
+                "real-device test is opt-in: run with -Dtimbre.audioDevice=true after agreeing to a few quiet tones");
+        CountDownLatch[] latch = {new CountDownLatch(1)};
+        PlaybackEngine engine = engineWithFinishLatch(latch);
+        for (int rate : new int[] {48000, 44100}) {
+            latch[0] = new CountDownLatch(1);
+            engine.setPlan(oneSecondTone(rate));
+            long t0 = System.nanoTime();
+            assertTrue(engine.play(0), "play at " + rate + " Hz");
+            assertTrue(latch[0].await(4, TimeUnit.SECONDS), "finished() at " + rate + " Hz");
+            double seconds = (System.nanoTime() - t0) / 1e9;
+            System.out.printf("REAL-DEVICE %d Hz: played to the end in %.2f s%n", rate, seconds);
+            assertTrue(seconds >= 0.95, "finished too early at " + rate + " Hz: " + seconds + " s");
+            assertEquals(PlaybackEngine.State.STOPPED, engine.state());
+            assertEquals(0, engine.positionFrames());
+        }
+        engine.close();
     }
 }

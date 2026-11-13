@@ -20,6 +20,8 @@ import com.jellyfish.timbre.audio.AudioSink;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.EnumSet;
+import java.util.Set;
 
 /**
  * A deterministic stand-in for the audio device.
@@ -45,6 +47,21 @@ public final class FakeAudioSink implements AudioSink {
     /** Position behaviour. */
     public enum Artifacts { NONE, PULSE_LIKE }
 
+    /**
+     * Optional device quirks measured in the Milestone 2 hardening probe (traces/tail-h1.csv, tailpad-h1.csv).
+     */
+    public enum Quirk {
+        /** drain() returns as soon as the sink is stopped (measured: 0.2 ms after stop). */
+        DRAIN_RETURNS_WHEN_STOPPED,
+        /**
+         * After stop() then start() the device does not run again if the queued depth is between 0.2 and 0.95 of the
+         * device buffer; drain() then gives up after 500 ms of device time with the audio unplayed. Measured: stuck at
+         * 50 to 180 ms queued with a 200 ms buffer, restarts from 193 ms (3 of 3 at 200 ms or more); tails of
+         * 40 ms or less were always fine. A later write that brings the depth to 0.95 of the buffer restarts it.
+         */
+        RESTART_NEEDS_DEPTH
+    }
+
     /** One scripted behaviour for the next write call. */
     public sealed interface Action permits Zero, Short, Throw {
     }
@@ -68,6 +85,7 @@ public final class FakeAudioSink implements AudioSink {
     private final Object lock = new Object();
     private final Pace pace;
     private final Artifacts artifacts;
+    private final Set<Quirk> quirks;
     private final double autoSpeed;
     private final Deque<Action> script = new ArrayDeque<>();
     private final ByteArrayOutputStream received = new ByteArrayOutputStream();
@@ -84,6 +102,8 @@ public final class FakeAudioSink implements AudioSink {
     private long consumedFrames;
     private long leadFloor;
     private boolean leadPending;
+    private boolean wasStopped;
+    private boolean restartStuck;
     private boolean writerBlocked;
     private boolean drainBlocked;
     private long acceptedWhileStopped;
@@ -111,9 +131,22 @@ public final class FakeAudioSink implements AudioSink {
      * @param autoSpeed device seconds per real second in AUTO mode
      */
     public FakeAudioSink(Pace pace, Artifacts artifacts, double autoSpeed) {
+        this(pace, artifacts, autoSpeed, EnumSet.of(Quirk.DRAIN_RETURNS_WHEN_STOPPED));
+    }
+
+    /**
+     * Creates a sink with explicit quirks.
+     *
+     * @param pace      manual or automatic time
+     * @param artifacts position model
+     * @param autoSpeed device seconds per real second in AUTO mode
+     * @param quirks    device quirks to reproduce
+     */
+    public FakeAudioSink(Pace pace, Artifacts artifacts, double autoSpeed, Set<Quirk> quirks) {
         this.pace = pace;
         this.artifacts = artifacts;
         this.autoSpeed = autoSpeed;
+        this.quirks = quirks.isEmpty() ? EnumSet.noneOf(Quirk.class) : EnumSet.copyOf(quirks);
     }
 
     /** Makes the next {@code open} fail. @param failure the exception to throw */
@@ -177,7 +210,7 @@ public final class FakeAudioSink implements AudioSink {
     public void advance(long nanos) {
         synchronized (lock) {
             deviceNanos += nanos;
-            if (started && !closed) {
+            if (started && !closed && !restartStuck) {
                 double frames = nanos * 1e-9 * rate + carry;
                 long whole = (long) frames;
                 carry = frames - whole;
@@ -200,6 +233,9 @@ public final class FakeAudioSink implements AudioSink {
             if (!started) {
                 started = true;
                 leadPending = true; // like the real line, the lift happens with the first data after start
+                if (wasStopped && quirks.contains(Quirk.RESTART_NEEDS_DEPTH)) {
+                    evaluateRestartLocked();
+                }
             }
             lock.notifyAll();
         }
@@ -210,6 +246,8 @@ public final class FakeAudioSink implements AudioSink {
         synchronized (lock) {
             if (started) {
                 started = false;
+                wasStopped = true;
+                restartStuck = false;
                 leadPending = false;
                 leadFloor = consumedFrames + bufferFrames;
             }
@@ -249,6 +287,9 @@ public final class FakeAudioSink implements AudioSink {
                     }
                     writtenFrames += take / 4;
                     accepted += take;
+                    if (restartStuck) {
+                        evaluateRestartLocked();
+                    }
                     if (!started) {
                         acceptedWhileStopped += take;
                     }
@@ -274,7 +315,12 @@ public final class FakeAudioSink implements AudioSink {
     @Override
     public void drain() {
         synchronized (lock) {
-            while (started && !closed && writtenFrames > consumedFrames) {
+            long begun = deviceNanos;
+            while (!closed && writtenFrames > consumedFrames
+                    && (started || !quirks.contains(Quirk.DRAIN_RETURNS_WHEN_STOPPED))) {
+                if (restartStuck && deviceNanos - begun >= 500_000_000L) {
+                    break; // the JDK gives up on a frozen position
+                }
                 drainBlocked = true;
                 lock.notifyAll();
                 try {
@@ -300,6 +346,12 @@ public final class FakeAudioSink implements AudioSink {
             long step = Math.max(1, rate / 50);
             return (pos + step - 1) / step * step; // the real position is a staircase that reads at the end of a step
         }
+    }
+
+    /** Re-evaluates the restart quirk for the current queue depth. Caller holds the lock. */
+    private void evaluateRestartLocked() {
+        long depth = writtenFrames - consumedFrames;
+        restartStuck = depth > 0.2 * bufferFrames && depth < 0.95 * bufferFrames;
     }
 
     @Override
