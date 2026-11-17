@@ -310,4 +310,33 @@ class RulerTicksTest {
         assertThrows(IllegalArgumentException.class, () -> RulerTicks.generate(new TimeAxis(44100, 441, 0), 0));
         assertThrows(NullPointerException.class, () -> RulerTicks.generate(null, 100));
     }
+
+    @Test
+    void capStopsTheLoopWhenTheSpacingRulesAreIgnored() {
+        // 44100 Hz, 1 frame per pixel, 1000 px: with both spacings 0 the 1-microsecond step would give
+        // 1000 / 44100 s / 1 us = 22675 ticks. The cap is 1000 + 2.
+        List<RulerTicks.Tick> ticks = RulerTicks.generate(new TimeAxis(44100, 1.0, 0L), 1000, 0.0, 0.0);
+        assertEquals(1002, ticks.size());
+        assertEquals(0.0, ticks.get(0).x(), 0.0);
+        for (int i = 1; i < ticks.size(); i++) {
+            assertTrue(ticks.get(i).x() > ticks.get(i - 1).x(), "ordered at " + i);
+        }
+    }
+
+    @Test
+    void capBoundsTheWorkForAnAbsurdlyWideAxis() {
+        // 1,000,000 frames per pixel at 44100 Hz over 1000 px is about 2.3e11 one-microsecond steps: without
+        // an early exit this would run for hours or exhaust the heap.
+        List<RulerTicks.Tick> ticks = org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(
+                java.time.Duration.ofSeconds(10),
+                () -> RulerTicks.generate(new TimeAxis(44100, 1_000_000.0, 0L), 1000, 0.0, 0.0));
+        assertEquals(1002, ticks.size());
+    }
+
+    @Test
+    void capDoesNotTouchNormalResults() {
+        // 44100 Hz, 441 frames per pixel = 100 px per second: 1 s major step, 0.1 s minors; width 1000 px
+        // covers 10 s: ticks at 0, 0.1, ... 10.0 = 101 ticks, far below the cap of 1002.
+        assertEquals(101, RulerTicks.generate(new TimeAxis(44100, 441.0, 0L), 1000).size());
+    }
 }

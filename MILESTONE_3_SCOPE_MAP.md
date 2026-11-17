@@ -64,5 +64,57 @@ Branch `feature/pinklove0526/m3a-headless-core`, from develop `19c55e83c70edee3f
 4. **Rules fixed where the design left a choice:** ruler minor ticks divide a major step into 10, 2 or 5 parts (steps starting with 1, 2, 5), and into 6 for the one-hour step; the 1-2-5 sequence runs from 1 microsecond to 1000 seconds, then 3600 seconds; ruler ticks cover `[0, width]` inclusive; a selection entirely after the project end counts as a cursor there for `PlayRangePolicy`; in `LaneSampler`, PEAKS needs every visible clip's pyramid, otherwise PLACEHOLDER, and clips outside the window need none.
 
 
-## Manual acceptance (user)
-(stub; the checklist and reference WAVs come with Phase B)
+## Phase B1 - read-only JavaFX display
+Branch `feature/pinklove0526/m3b-javafx-views`, from develop `421e0a9`. Phase B is split: **B1** (this section) draws the project and takes no interaction except dragging the horizontal scrollbar; **B2** adds mouse selection, wheel zoom, shortcuts, play-range wiring and playback follow. No sound is played in B1.
+
+### Step 0 - RulerTicks safety cap
+`RulerTicks.generate` stops its loop as soon as the list holds `widthPx + 2` ticks (a valid result has at most `widthPx / 6 + 1`). The cap ends the generating loop itself; nothing is truncated afterwards. It exists because the original mutation M3b (`MIN_MAJOR_SPACING_PX = 0.0`) exhausted the heap. A package-private overload `generate(axis, widthPx, minMajorSpacingPx, minMinorSpacingPx)` lets a test force spacing 0 (the public method always passes the two constants).
+
+### Lane geometry (package `ui.viewmodel`, `LaneGeometry`, no JavaFX)
+- A lane is 90 px high (rows 0..89), followed by a 1 px separator (row 90): row stride 91 px per channel.
+- Centre row `yc = 45`. Amplitude `v` in [-1, 1] maps to row `yOf(v) = clamp(round(45.0 - 44.0 * v), 1, 89)`, where `round` is `Math.round` (half rounds up: `yOf(0.125) = 40`, `yOf(-0.125) = 51`). Values outside [-1, 1] clamp to rows 1 and 89; NaN maps to 45.
+- Peak band of a column: rows `yOf(max)` to `yOf(min)` inclusive (at least 1 px, because `yOf` is monotonic decreasing). RMS band: rows `max(peakTop, yOf(+rms))` to `min(peakBottom, yOf(-rms))` inclusive, drawn on top of the peak band in the RMS colour.
+- SAMPLE_LINES: the polyline runs through `(xAtFrame(frame), yOf(sample) + 0.5)`; a 3x3 px dot centred on `(round(x), yOf(sample))` is added when `framesPerPixel <= 1/6` (6 or more px per frame).
+- Drawing order per lane: background (rows 0..89), centre line (row 45), then bands or polyline and dots, then the separator row (row 90). PLACEHOLDER lanes and silence show background and centre line only.
+
+### Classes
+`ui.viewmodel`: `LaneGeometry`, `ScrollbarMapping` (scrollFrame <-> scrollbar `value`, `max` = the scroll limit, `visibleAmount` = visible frames; round-trips within 1 frame). `ui`: `Theme` (all colours), `WaveformPainter` (stateless drawing), `LaneView` (one Canvas per channel), `TrackHeaderView` (120 px; name and format line), `TrackRowView`, `RulerView`, `StatusBarView`, `OverlayView` (playhead or cursor line and selection fill), `EditorModel` (project, axis, selection, playhead, dirty counters, owns the `PeakPyramidCache`), `EditorPane` (replaces `TransportHarnessPane`; keeps File > Open WAV, Clear tracks and the Play / Pause / Stop buttons; slider and old time readout removed).
+
+Layout: menu and transport row, ruler row (120 px spacer plus ruler), a vertically scrolling stack of track rows with the overlay canvas stacked on the lane area, the horizontal scrollbar aligned with the lane area, the status bar. The waveform layer repaints only when axis, project, pyramid readiness or size change; the overlay repaints when dirty and on every animation pulse while PLAYING or PAUSED. On load the axis is `TimeAxis.fit` for the project and lane width; resizing keeps `framesPerPixel` and re-clamps the scroll. While PLAYING or PAUSED the overlay draws at `engine.positionFrames()`, otherwise at the cursor (selection start, 0 by default).
+
+### Test plan
+Headless: RulerTicks cap tests, `ScrollbarMappingTest` (literals, round trip, fits-in-window, end limit), `LaneGeometryTest` (yOf, band rows, dot rule against hand-computed literals), architecture guard. Opt-in FX render test `EditorRenderFxTest` (`-Dtimbre.fx=true`): cases (a) to (i) with pixel checks against `Theme` constants and PNG dumps. FX mutations: swap min/max rows, shift columns by +1 x, playhead at `frame + 1000`, plus the Step 0 mutation. Manual kit: `ManualKitGenerator` writes sweep, clipped sine, silence, impulses, stereo difference (and with `-Dtimbre.kit.long=true` the 10-minute file).
+
+### B1 adaptations
+Design versus the real Phase A APIs. No model, audio, dsp or viewmodel code changed beyond what is listed.
+1. **Track name.** `Track.name()` exists, so no name map is needed; `EditorPane.baseName` strips the extension of the file name before `Track.of`.
+2. **Pyramid lookup.** `LaneSampler` takes `Function<SampleSource, PeakPyramid>`; `LaneView` passes `src -> cache.getIfReady(src).orElse(null)`.
+3. **RulerTicks overload.** Package-private `generate(axis, widthPx, minMajor, minMinor)` added only for the cap test.
+4. **Silent columns draw no band (changes the design text).** The design says to fill the peak and RMS band for every non-placeholder column. A silent column (min and max both exactly 0) would then draw a dark row 45 over the faint centre line, so silence would differ from a placeholder lane and from a gap, while the design also says gaps and silence show only the centre line and that a placeholder shows the same. `WaveformPainter` therefore skips the bands of columns with `min == 0 && max == 0` (`LaneGeometry.isSilent`). Recorded under Recorded retractions in PROJECT_STATUS.md.
+5. **Peak band is order-insensitive.** `LaneGeometry.peakBand` orders its two rows, so swapping min and max in the painter is an equivalent mutant; the FX mutation for the painter is the sign flip of `yOf`.
+6. **Scrollbar thumb.** The mapping follows the design (`max` = scroll limit, `visibleAmount` = visible frames). JavaFX derives the thumb size from `visibleAmount` and `max` itself; I did not check how it looks near the fit zoom (the PNG only shows the disabled bar).
+7. **Lane width.** The lane area width is the content width of the vertical scroll pane minus the 120 px header; the ruler row and the scrollbar row get a right pad equal to the vertical scrollbar width (bound), so all four line up (checked in `jTheAssembledPaneAlignsRulerLanesOverlayAndScrollbar`). The pane starts with `DEFAULT_LANE_WIDTH` 800 until the first layout pass; tracks opened before the first layout would fit to 800 px (the real app opens files only after the window is shown).
+8. **Overlay size.** The overlay canvas height is bound to the track stack height and its width follows the lane width. A Canvas has a hard texture limit (a few thousand pixels), so a project with very many tracks would exceed it; not addressed in B1.
+9. **Harness replaced.** `TransportHarnessPane` is deleted; `EditorPane` keeps File > Open WAV, Clear tracks, Exit and the Play, Pause, Stop buttons, the state label and the underrun counter. Play starts at the selection start (frame 0 unless set from code); no range wiring (B2).
+10. **Opt-in class counts.** The FX class is skipped as a class, but surefire reports its 10 methods as run and skipped (+10 run, +10 skipped).
+11. **Manual kit directory.** The earlier manual directory lived on the external drive and is gone; the kit is generated into the git-ignored `build-logs/manual`.
+
+### Phase B1 results
+Branch `feature/pinklove0526/m3b-javafx-views`, from develop `421e0a9dd72589ec6a4e9d32156c81b86c615c45`. Logs and predictions in `build-logs/m3b1` (git-ignored; `predictions.txt` holds every prediction next to its result).
+- **Suite:** 370 run, 0 failures, 0 errors, 16 skipped (6 older opt-in plus the 10 FX methods), 34.5 s (`12-full-test`); 354 executed, up from 334 (+3 RulerTicks cap, +11 LaneGeometry, +6 ScrollbarMapping). 0 compiler warnings after deleting `target/classes` and `target/test-classes`. The new headless classes plus the architecture guard ran three times (32 tests each, 0 failures).
+- **FX render test** `EditorRenderFxTest` (`-Dtimbre.fx=true`, DISPLAY :1, no Stage, no sound): 10 tests (cases a to i plus the assembled pane), 0 failures, three consecutive runs; the PNGs are byte-identical across runs (except `j-pane.png`, which contains text and is not hashed). PNGs in `build-logs/m3b1/png`.
+- **Step 0:** the original mutation M3b now fails cleanly: 13 run, 10 failures (assertion failures), no OutOfMemoryError; sha256 restored.
+- **FX mutations:** yOf sign flip caught by 5 FX tests (a, c, d, e, h); every column shifted +1 x caught by 4 (a, c, d, h); playhead at frame + 1000 caught by 1 (g). All as predicted; sha256 restored each time.
+- **Manual kit** (`build-logs/manual`): 9 files generated with `-Dtimbre.kit.long=true`; contents spot-checked independently with a Python reader (impulse positions and values, clipping at the rails, sweep peak -12.0 dBFS, channel peaks, silence). The 10-minute file is 105,840,044 bytes.
+- **Memory** (headless, `18-heap-10min`): reading the 10-minute stereo file costs about 204 MB of heap (26.46 million frames as two float arrays), its pyramid about 4 MB more; read 224 ms, pyramid 187 ms. Canvas and scene memory not measured.
+- **Not verified:** the dist jar (`mvn -o -Pdist package` fails offline: `maven-jar-plugin:3.5.1` is not in the relocated local repository; nothing was downloaded), HiDPI, real window behaviour and the manual items below.
+
+### Manual acceptance (user)
+Run `source ./dev-env.sh; mvn -o javafx:run`, then File > Open WAV for each file in `build-logs/manual`:
+1. The lane shows the expected shape: `sweep_mono_44100` an even band growing denser; `clipped_sine_mono_44100` flat tops touching the lane edges; `silence_stereo_44100` only the centre line in both lanes; `impulses_mono_44100` four thin spikes at 1.0, 2.5, 5.0 and 9.0 s that never vanish when zoomed out (zooming needs B2; at the fit zoom check they are visible); `stereo_difference_44100` the left lane clearly taller than the right.
+2. The ruler labels grow sensibly when the window is resized (the zoom stays, so more time becomes visible) and the horizontal scrollbar drags smoothly.
+3. `long_stereo_44100_10min` stays responsive: the lane shows the flat line first, then the waveform appears. Measured headless: about 204 MB heap for the samples.
+4. Opening several files stacks tracks and scrolls vertically.
+5. The track header shows the name (file name without extension) and the format line.
+B2 (mouse selection, wheel zoom, shortcuts, play range, follow) completes this checklist.
+
