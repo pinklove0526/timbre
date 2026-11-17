@@ -42,7 +42,11 @@ class RealDevicePlaybackTest {
     }
 
     private static MixPlan oneSecondTone(int rate) {
-        float[] tone = new float[rate];
+        return tone(rate, 1);
+    }
+
+    private static MixPlan tone(int rate, int seconds) {
+        float[] tone = new float[rate * seconds];
         int fade = rate * 20 / 1000;
         double amp = Math.pow(10.0, -24.0 / 20.0);
         for (int i = 0; i < tone.length; i++) {
@@ -177,6 +181,51 @@ class RealDevicePlaybackTest {
             assertEquals(PlaybackEngine.State.STOPPED, engine.state());
             assertEquals(0, engine.positionFrames());
         }
+        engine.close();
+    }
+
+    @Test
+    void playsOnlyTheRequestedRangeOfALongerProject() throws Exception {
+        assumeTrue("true".equals(System.getProperty("timbre.audioDevice")),
+                "real-device test is opt-in: run with -Dtimbre.audioDevice=true after agreeing to a quiet tone");
+        CountDownLatch[] latch = {new CountDownLatch(1)};
+        PlaybackEngine engine = engineWithFinishLatch(latch);
+        long from = RATE / 2; // 500 ms
+        long to = RATE * 3 / 2; // 1500 ms: plays 1.0 s of the tone
+        // 2.0 s project: silence outside the range, a -24 dBFS 440 Hz tone with 20 ms fades inside it
+        float[] data = new float[RATE * 2];
+        int fade = RATE * 20 / 1000;
+        double amp = Math.pow(10.0, -24.0 / 20.0);
+        for (int i = (int) from; i < to; i++) {
+            int k = i - (int) from;
+            int len = (int) (to - from);
+            double env = k < fade ? (double) k / fade : k >= len - fade ? (double) (len - 1 - k) / fade : 1.0;
+            data[i] = (float) (Math.sin(2 * Math.PI * 440.0 * k / RATE) * amp * env);
+        }
+        engine.setPlan(MixPlan.of(List.of(MemorySampleSource.copyOf(RATE, new float[][] {data}))));
+        long t0 = System.nanoTime();
+        assertTrue(engine.play(from, to));
+        assertEquals(to, engine.endFrame());
+        long worstOver = Long.MIN_VALUE;
+        long last = from;
+        long deadline = t0 + 4_000_000_000L;
+        while (latch[0].getCount() > 0 && System.nanoTime() < deadline) {
+            long pos = engine.positionFrames();
+            worstOver = Math.max(worstOver, pos - to);
+            assertTrue(pos <= to, "position " + pos + " beyond the range end " + to);
+            assertTrue(pos >= from, "position " + pos + " before the range start " + from);
+            assertTrue(pos >= last || engine.state() == PlaybackEngine.State.STOPPED, "position decreased");
+            last = pos;
+            Thread.sleep(5);
+        }
+        assertEquals(0, latch[0].getCount(), "finished() must arrive");
+        double seconds = (System.nanoTime() - t0) / 1e9;
+        System.out.printf("REAL-DEVICE range 500..1500 ms: finished after %.2f s, position at most %d frames "
+                + "from the end%n", seconds, -worstOver);
+        assertTrue(seconds >= 0.95, "finished too early: " + seconds + " s (the range is 1.0 s long)");
+        assertTrue(seconds <= 1.0 + 0.25 + 1.0, "finished too late: " + seconds + " s");
+        assertEquals(PlaybackEngine.State.STOPPED, engine.state());
+        assertEquals(from, engine.positionFrames(), "cursor returns to the start frame");
         engine.close();
     }
 }
