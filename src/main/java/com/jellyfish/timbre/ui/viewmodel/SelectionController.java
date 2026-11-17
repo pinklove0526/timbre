@@ -87,6 +87,21 @@ public final class SelectionController {
     }
 
     /**
+     * Sets the selection from outside the mouse (keyboard or menu): the selection is clamped to the project,
+     * the anchor becomes its start (so a shift-press extends from the start) and a gesture in progress is
+     * abandoned.
+     *
+     * @param newSelection the selection
+     */
+    public void setSelection(Selection newSelection) {
+        Selection clamped = Objects.requireNonNull(newSelection, "newSelection").clampedTo(projectFrames);
+        this.selection = clamped;
+        this.anchor = clamped.startFrame();
+        this.pressed = false;
+        this.dragging = false;
+    }
+
+    /**
      * Handles a mouse press.
      *
      * @param x     pointer position in pixels from the left edge

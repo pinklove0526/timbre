@@ -48,7 +48,7 @@
 - M0 Skeleton: closed, window confirmed by user.
 - M1 Audio core: closed (M1 and its hardening merged to develop by the user).
 - M2 Playback: closed (M2 and its hardening merged to develop by the user; the user confirmed on 2026-11-13 that the three listening checks passed and the time readout stayed within the total at the end of playback).
-- M3 Waveform UI: Phase B1 implemented, verified (see build-logs/m3b1), awaiting user review. Phase A is merged to develop (see build-logs/m3a). B2 (interaction) not started. The dist jar check (`-Pdist package`) is open: not possible offline until the Maven plugins are in the relocated repository. Decisions: see MILESTONE_3_SCOPE_MAP.md (one peak pyramid per source with min, max and sum of squares, base block 256 frames, factor 4; one lane per channel; Ctrl+wheel zoom, Shift+wheel scroll; selection is a time range across all tracks; mouse selection locked while PLAYING or PAUSED; Play plays the selection, else cursor to end; engine gained play(fromFrame, toFrame)).
+- M3 Waveform UI: implemented, verified (see build-logs/m3b1 and m3b2), awaiting user acceptance (the manual checklist is at the end of MILESTONE_3_SCOPE_MAP.md). Decisions: see MILESTONE_3_SCOPE_MAP.md (one peak pyramid per source with min, max and sum of squares, base block 256 frames, factor 4; one lane per channel; Ctrl+wheel zoom, Shift+wheel scroll; selection is a time range across all tracks; mouse selection locked while PLAYING or PAUSED; Play plays the selection, else cursor to end; engine gained play(fromFrame, toFrame)).
 
 ## Recorded retractions
 - 2026-11-09: Oracle public Maven repository (oracle-public) removed from the Maven settings (repository, pluginRepository, profile and activeProfile). Reason: every artifact came from Maven Central; the Oracle repo supplied nothing and only added ~150 not-found warnings per cold build. Re-add it only if an Oracle-hosted artifact is ever needed.
@@ -61,6 +61,13 @@
 - 2026-11-13 (M2 hardening): `PlaybackEngine` no longer treats `drain()` returning as proof that the tail played, and it appends a silence pad of 1.25 device buffers (250 ms) after the last real audio. Before: a pause during the final drain with a quick resume could end the run early, and a resume with less than about one buffer of audio queued did not restart the line, so `finished()` fired with the tail unplayed. Evidence: build-logs/m2h/03-tail.log, 04-tailpad.log, 06-tail-tests-before.log. Side effect: `finished()` arrives up to 250 ms later and the sink receives 250 ms of trailing zeros.
 
 - 2026-11-17 (M3 Phase B1): the design rule "draw the peak and RMS band for every non-placeholder column" is amended: a silent column (min and max exactly 0) draws no band. Reason: it would paint a dark row 45 over the centre line, so silence and gaps would not look like a placeholder lane, which the design requires.
+
+- 2026-11-18 (M3 Phase B2): the B1 overlay (canvas as tall as the whole track stack, inside the scrolled content) is replaced by a viewport-sized overlay that is not scrolled and draws only over the track rows. Reason: the canvas texture limit for many tracks, and the B1 finding that the playhead line overshot the tracks. Also changed: Play is enabled only when STOPPED and starts at the selection or cursor through `PlayRangePolicy` (B1 Play restarted from the start); Clear tracks stops the engine first and is enabled while playing.
+
+## M3 Phase B2 (branch feature/pinklove0526/m3b2-interaction, 2026-11-18)
+- Results: see MILESTONE_3_SCOPE_MAP.md, "Phase B2". Raw logs: build-logs/m3b2 (git-ignored). 395 run, 0 failures, 26 skipped (20 are the opt-in FX classes), 0 compiler warnings; `EditorInteractionFxTest` 10/10 three times; nine mutation runs caught cleanly (one equivalent mutant replaced).
+- Added: `WheelMapping`, `ZoomAnchorPolicy`, `TransportRules`, `SelectionController.setSelection`, `EditorActions`; `EditorPane` gained the input pane, key filter, View and Select menus, transport rules, follow and the viewport-sized overlay; `OverlayView.setViewport`; test support `FakeEngineRig`.
+- Deviations: bounded 1 ms polling sleeps in two test helpers (never on the FX thread); Space release consumed although redundant.
 
 ## M3 Phase B1 (branch feature/pinklove0526/m3b-javafx-views, 2026-11-17)
 - Results and the adaptation list: see MILESTONE_3_SCOPE_MAP.md, "Phase B1". Raw logs: build-logs/m3b1 (git-ignored). 370 run, 0 failures, 16 skipped (10 are the opt-in FX class), 0 compiler warnings; FX render test 10/10 three times; FX and RulerTicks mutations caught cleanly.
@@ -92,7 +99,7 @@
 - Deviations: the 96000 Hz clock run was added because the default route supports it (16.8 s of sound used, under the 30 s cap); drift could not be resolved with 3 s runs (stated in the findings).
 
 ## Deferred
-- M3 Phase B2 (not started): mouse selection, wheel zoom, keyboard shortcuts, play-range wiring (`PlayRangePolicy` into `play(from, to)`), playback follow (`FollowPolicy`), the rest of the manual acceptance list. New in B1: Canvas texture limit for projects with very many tracks; scrollbar thumb size not checked beyond the PNG; the dist jar check.
+- M3 deferred (named): selection-edge dragging; auto-scroll while dragging past the edge; ruler click or scrub; zoom to selection; touchpad pinch zoom; seeking during playback; vertical zoom and amplitude ruler; clip borders and gap drawing; clipping colours; dark theme; per-track selection (with editing, M4); HiDPI check on the Retina Mac; pyramid for files too large for memory (needs a file-backed source); the scrollbar thumb look near the fit zoom (if the user does not accept it); follow fighting a manual scroll during playback (a playhead scrolled out of view is paged back).
 - M3 (after Phase A): vertical zoom and amplitude ruler; clip borders and gap drawing; clipping colours; dark theme; per-track selection (with editing, M4); scrubbing and seeking during playback; selection auto-scroll while dragging past the edge; zoom to selection; HiDPI check on the user's Retina Mac; pyramid for files too large for memory (needs the file-backed source); touchpad pinch zoom.
 - Apple Silicon (mac-aarch64) and Linux aarch64 jars: separate per-architecture jars are needed because their native file names collide with the x64 ones.
 - Runtime check of the universal jar on Windows and macOS: not done.
