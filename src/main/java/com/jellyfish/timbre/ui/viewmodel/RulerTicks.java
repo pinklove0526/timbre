@@ -29,6 +29,11 @@ import java.util.Objects;
  * starting with 5) parts and are only produced when they are at least {@value #MIN_MINOR_SPACING_PX} pixels
  * apart. Times are held in integer units of 100 nanoseconds so tick positions do not drift.
  *
+ * <p><b>Safety cap:</b> generation stops as soon as the list holds {@code widthPx + 2} ticks. Any valid
+ * result is far below that (majors are at least 80 px and minors at least 6 px apart, so at most
+ * {@code widthPx / 6 + 1} ticks); the cap only bounds the work and the memory if the spacing rules were
+ * ever broken. The generating loop itself stops, the list is not truncated afterwards.
+ *
  * <p><b>Threading:</b> stateless; safe to call from any thread.
  */
 public final class RulerTicks {
@@ -69,13 +74,22 @@ public final class RulerTicks {
      * @throws IllegalArgumentException if {@code widthPx} is not positive
      */
     public static List<Tick> generate(TimeAxis axis, int widthPx) {
+        return generate(axis, widthPx, MIN_MAJOR_SPACING_PX, MIN_MINOR_SPACING_PX);
+    }
+
+    /**
+     * Same as {@link #generate(TimeAxis, int)} with the two spacing rules as arguments. It exists only so a
+     * test can force the pathological case (spacing 0) that the safety cap guards against; the public
+     * method always passes the two constants.
+     */
+    static List<Tick> generate(TimeAxis axis, int widthPx, double minMajorSpacingPx, double minMinorSpacingPx) {
         Objects.requireNonNull(axis, "axis");
         if (widthPx <= 0) {
             throw new IllegalArgumentException("widthPx must be > 0: " + widthPx);
         }
         double framesPerUnit = axis.sampleRate() / UNITS_PER_SECOND;
         double pxPerUnit = framesPerUnit / axis.framesPerPixel();
-        long majorUnits = chooseMajor(pxPerUnit);
+        long majorUnits = chooseMajor(pxPerUnit, minMajorSpacingPx);
         long mantissa = majorUnits;
         while (mantissa >= 10) {
             mantissa /= 10;
@@ -86,7 +100,7 @@ public final class RulerTicks {
             divisions = 6;
         }
         long minorUnits = majorUnits / divisions;
-        boolean withMinor = minorUnits * pxPerUnit >= MIN_MINOR_SPACING_PX;
+        boolean withMinor = minorUnits * pxPerUnit >= minMinorSpacingPx;
         long stepUnits = withMinor ? minorUnits : majorUnits;
         long ratio = majorUnits / stepUnits;
 
@@ -96,7 +110,8 @@ public final class RulerTicks {
         long last = (long) Math.floor(lastFrame / framesPerUnit / stepUnits + 1e-9);
         double majorSeconds = majorUnits / UNITS_PER_SECOND;
         List<Tick> out = new ArrayList<>();
-        for (long j = Math.max(0, first); j <= last; j++) {
+        long cap = (long) widthPx + 2;
+        for (long j = Math.max(0, first); j <= last && out.size() < cap; j++) {
             double frameAt = (double) (j * stepUnits) * framesPerUnit;
             double x = (frameAt - axis.scrollFrame()) / axis.framesPerPixel();
             if (x < -EDGE_TOLERANCE_PX || x > widthPx + EDGE_TOLERANCE_PX) {
@@ -110,7 +125,7 @@ public final class RulerTicks {
         return List.copyOf(out);
     }
 
-    private static long chooseMajor(double pxPerUnit) {
+    private static long chooseMajor(double pxPerUnit, double minMajorSpacingPx) {
         long unit = MICROSECOND_UNITS;
         for (int decade = 0; decade <= 9; decade++) {
             for (long m : MANTISSAS) {
@@ -118,7 +133,7 @@ public final class RulerTicks {
                 if (step > 1000L * 10_000_000L) {
                     return HOUR_UNITS;
                 }
-                if (step * pxPerUnit >= MIN_MAJOR_SPACING_PX) {
+                if (step * pxPerUnit >= minMajorSpacingPx) {
                     return step;
                 }
             }

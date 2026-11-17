@@ -15,7 +15,7 @@
  */
 package com.jellyfish.timbre.app;
 
-import com.jellyfish.timbre.ui.TransportHarnessPane;
+import com.jellyfish.timbre.ui.EditorPane;
 import javafx.application.Application;
 import javafx.scene.Scene;
 import javafx.scene.layout.BorderPane;
@@ -23,7 +23,7 @@ import javafx.stage.Stage;
 
 /**
  * JavaFX application: the main window (frame for the future Audacity-style layout), currently hosting the
- * temporary transport harness.
+ * temporary transport editor.
  */
 public final class TimbreApp extends Application {
 
@@ -32,13 +32,13 @@ public final class TimbreApp extends Application {
     private static final double MIN_WIDTH = 640;
     private static final double MIN_HEIGHT = 400;
 
-    private TransportHarnessPane harness;
+    private EditorPane editor;
 
     @Override
     public void start(Stage stage) {
         BorderPane root = new BorderPane();
-        harness = new TransportHarnessPane();
-        root.setCenter(harness);
+        editor = new EditorPane();
+        root.setCenter(editor);
         stage.setScene(new Scene(root, WIDTH, HEIGHT));
         stage.setMinWidth(MIN_WIDTH);
         stage.setMinHeight(MIN_HEIGHT);
@@ -48,8 +48,8 @@ public final class TimbreApp extends Application {
 
     @Override
     public void stop() {
-        if (harness != null) {
-            harness.close();
+        if (editor != null) {
+            editor.close();
         }
     }
 }
