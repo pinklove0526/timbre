@@ -82,6 +82,7 @@ public final class PlaybackEngine {
     private volatile State state = State.STOPPED;
     private volatile Run current;
     private volatile long lastStartFrame;
+    private volatile long lastEndFrame;
     private boolean closed;
 
     private final AtomicLong blocksRendered = new AtomicLong();
@@ -131,8 +132,8 @@ public final class PlaybackEngine {
     }
 
     /**
-     * Starts playing from a frame. If already playing or paused, the current run is stopped first. The
-     * device is opened on the caller's thread.
+     * Starts playing from a frame up to the end of the plan. Equivalent to
+     * {@code play(fromFrame, Long.MAX_VALUE)}.
      *
      * @param fromFrame project frame to start at, at least 0
      * @return false (and STOPPED, no device opened) if the plan is empty or {@code fromFrame} is at or after
@@ -141,6 +142,25 @@ public final class PlaybackEngine {
      * @throws IllegalStateException if the engine is closed
      */
     public boolean play(long fromFrame) throws AudioDeviceException {
+        return play(fromFrame, Long.MAX_VALUE);
+    }
+
+    /**
+     * Starts playing the range {@code [fromFrame, min(toFrame, plan length))}. If already playing or paused,
+     * the current run is stopped first. The device is opened on the caller's thread. At the end of the range
+     * the run ends exactly like the end of the project: the final partial block, a silence pad, the drain,
+     * then {@link PlaybackListener#finished()} and the cursor back at {@code fromFrame}. The position never
+     * exceeds the range end (the pad is not project time).
+     *
+     * @param fromFrame project frame to start at, at least 0
+     * @param toFrame   project frame just after the last frame to play; values beyond the plan length are
+     *                  clamped to it
+     * @return false (and STOPPED, no device opened) if the plan is empty or the range is empty
+     * @throws IllegalArgumentException if {@code fromFrame} is negative
+     * @throws AudioDeviceException if the device cannot be opened or started
+     * @throws IllegalStateException if the engine is closed
+     */
+    public boolean play(long fromFrame, long toFrame) throws AudioDeviceException {
         if (fromFrame < 0) {
             throw new IllegalArgumentException("fromFrame must not be negative: " + fromFrame);
         }
@@ -148,7 +168,8 @@ public final class PlaybackEngine {
             requireOpen();
             stopLocked();
             MixPlan p = plan.get();
-            if (p.isEmpty() || fromFrame >= p.length()) {
+            long rangeEnd = Math.min(toFrame, p.length());
+            if (p.isEmpty() || fromFrame >= rangeEnd) {
                 return false;
             }
             int rate = p.sampleRate();
@@ -161,7 +182,7 @@ public final class PlaybackEngine {
             }
             Run r;
             try {
-                r = new Run(sink, p, fromFrame);
+                r = new Run(sink, p, fromFrame, toFrame);
                 r.renderFirstBlock();
                 sink.start();
             } catch (RuntimeException e) {
@@ -179,6 +200,7 @@ public final class PlaybackEngine {
                 current = r;
                 state = State.PLAYING;
                 lastStartFrame = fromFrame;
+                lastEndFrame = rangeEnd;
             }
             fireState(State.STOPPED, State.PLAYING);
             r.thread.start();
@@ -310,7 +332,7 @@ public final class PlaybackEngine {
         synchronized (r.clock) {
             played = r.clock.estimate(now, safePosition(r), r.framesWritten);
         }
-        return Math.min(r.startFrame + played, plan.get().length());
+        return Math.min(r.startFrame + played, r.endFrame());
     }
 
     private static long safePosition(Run r) {
@@ -324,6 +346,14 @@ public final class PlaybackEngine {
     /** @return the start frame of the last run (the cursor while STOPPED) */
     public long startFrame() {
         return lastStartFrame;
+    }
+
+    /**
+     * @return the end frame (exclusive) of the last run's range as it was when the run started: the requested
+     *         end limited to the plan length; 0 before the first run
+     */
+    public long endFrame() {
+        return lastEndFrame;
     }
 
     /** @return counters of the current or last run */
@@ -366,6 +396,7 @@ public final class PlaybackEngine {
         final AudioSink sink;
         final int rate;
         final long startFrame;
+        final long requestedEnd;
         final PlaybackClock clock;
         final Thread thread;
         final long bufferNanos;
@@ -386,8 +417,9 @@ public final class PlaybackEngine {
         private int pendingBytes;
         private long nextFrame;
 
-        Run(AudioSink sink, MixPlan p, long startFrame) {
+        Run(AudioSink sink, MixPlan p, long startFrame, long requestedEnd) {
             this.sink = sink;
+            this.requestedEnd = requestedEnd;
             this.mixPlan = p;
             this.rate = p.sampleRate();
             this.startFrame = startFrame;
@@ -399,13 +431,18 @@ public final class PlaybackEngine {
             this.thread.setDaemon(true);
         }
 
+        /** @return the end of the range now: the requested end limited to the current plan's length */
+        long endFrame() {
+            return Math.min(requestedEnd, PlaybackEngine.this.plan.get().length());
+        }
+
         void renderFirstBlock() {
             renderNext();
         }
 
         private void renderNext() {
             long t0 = System.nanoTime();
-            int n = (int) Math.min(BLOCK_FRAMES, mixPlan.length() - nextFrame);
+            int n = (int) Math.min(BLOCK_FRAMES, Math.min(requestedEnd, mixPlan.length()) - nextFrame);
             mixer.mix(nextFrame, n, left, right);
             SampleCodec.encode(pair, 0, n, 2, WavEncoding.PCM_16, pcm);
             pendingBytes = n * FRAME_BYTES;
@@ -454,7 +491,7 @@ public final class PlaybackEngine {
                         mixPlan = np;
                         mixer = new StereoMixer(np, BLOCK_FRAMES);
                     }
-                    if (nextFrame >= mixPlan.length()) {
+                    if (nextFrame >= Math.min(requestedEnd, mixPlan.length())) {
                         break;
                     }
                     renderNext();

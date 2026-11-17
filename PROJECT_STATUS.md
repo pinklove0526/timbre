@@ -47,7 +47,8 @@
 ## Milestone status
 - M0 Skeleton: closed, window confirmed by user.
 - M1 Audio core: closed (M1 and its hardening merged to develop by the user).
-- M2 Playback: implemented and verified (headless, see build-logs/m2 and build-logs/m2h); the user ran the manual checklist on 2026-11-13 and it passed except that the bass file was inaudible (replaced by a 440 Hz tone file); hardening done on branch feature/pinklove0526/m2-hardening, awaiting user close.
+- M2 Playback: closed (M2 and its hardening merged to develop by the user; the user confirmed on 2026-11-13 that the three listening checks passed and the time readout stayed within the total at the end of playback).
+- M3 Waveform UI: Phase A implemented, verified headless (see build-logs/m3a), awaiting user review. Phase B (JavaFX views) not started. Decisions: see MILESTONE_3_SCOPE_MAP.md (one peak pyramid per source with min, max and sum of squares, base block 256 frames, factor 4; one lane per channel; Ctrl+wheel zoom, Shift+wheel scroll; selection is a time range across all tracks; mouse selection locked while PLAYING or PAUSED; Play plays the selection, else cursor to end; engine gained play(fromFrame, toFrame)).
 
 ## Recorded retractions
 - 2026-11-09: Oracle public Maven repository (oracle-public) removed from the Maven settings (repository, pluginRepository, profile and activeProfile). Reason: every artifact came from Maven Central; the Oracle repo supplied nothing and only added ~150 not-found warnings per cold build. Re-add it only if an Oracle-hosted artifact is ever needed.
@@ -58,6 +59,11 @@
 - 2026-11-13: M2 decision 5 (transport) amended to 5': stop is `stop()` plus `close()` (reopen on next play), and the position is the device position capped by elapsed playing time and frames written during the first two buffer lengths after each start/resume, instead of the raw device clock with a written-minus-buffered fallback. Reason: after start, stop and flush the device position leads true playback by up to 200 ms and then stays flat; the written-minus-buffered estimate is the same quantity as the device position on this stack (build-logs/m2-probe/06-clock.log, 07-pause.log).
 - 2026-11-13: M2 decision 6 (tests) amended to 6': the fake sink reproduces the Phase A position artifacts and is validated against recorded traces. Reason: the artifacts decide whether the cursor logic is correct.
 - 2026-11-13 (M2 hardening): `PlaybackEngine` no longer treats `drain()` returning as proof that the tail played, and it appends a silence pad of 1.25 device buffers (250 ms) after the last real audio. Before: a pause during the final drain with a quick resume could end the run early, and a resume with less than about one buffer of audio queued did not restart the line, so `finished()` fired with the tail unplayed. Evidence: build-logs/m2h/03-tail.log, 04-tailpad.log, 06-tail-tests-before.log. Side effect: `finished()` arrives up to 250 ms later and the sink receives 250 ms of trailing zeros.
+
+## M3 Phase A (branch feature/pinklove0526/m3a-headless-core, 2026-11-13)
+- Results: see MILESTONE_3_SCOPE_MAP.md, "Phase A results". Raw logs: build-logs/m3a (git-ignored). 340 tests, 6 skipped (opt-in), 0 failures; all five mutation checks caught.
+- Deviations: (1) the 9-blocks-per-column invariant holds per clip piece; a column across a clip boundary can reach 11. (2) The zoom anchor stays within 1 px only from 0.5 frames per pixel up (the scroll position is a whole frame); below that, within half a frame. (3) Small API additions listed in the scope map. The M2 closure was confirmed by the user on 2026-11-13.
+- New engine behavior (not a retraction; additive): `PlaybackEngine.play(from, to)` and `endFrame()`; `play(from)` is unchanged.
 
 ## M2 Phase B (branch feature/pinklove0526/m2-playback, 2026-11-13)
 - Implemented: `AudioSink`/`JavaSoundSink`, `MixPlan`, `StereoMixer`, `PlaybackClock`, `PlaybackEngine`, `PlaybackListener`, `EngineStats`, `AudioDeviceException`, and the temporary `ui.TransportHarnessPane`. Tests: 236 in total, 2 skipped (opt-in corpus and real-device); results and logs in build-logs/m2 (git-ignored).
@@ -79,12 +85,13 @@
 - Deviations: the 96000 Hz clock run was added because the default route supports it (16.8 s of sound used, under the 30 s cap); drift could not be resolved with 3 s runs (stated in the findings).
 
 ## Deferred
+- M3 (after Phase A): vertical zoom and amplitude ruler; clip borders and gap drawing; clipping colours; dark theme; per-track selection (with editing, M4); scrubbing and seeking during playback; selection auto-scroll while dragging past the edge; zoom to selection; HiDPI check on the user's Retina Mac; pyramid for files too large for memory (needs the file-backed source); touchpad pinch zoom.
 - Apple Silicon (mac-aarch64) and Linux aarch64 jars: separate per-architecture jars are needed because their native file names collide with the x64 ones.
 - Runtime check of the universal jar on Windows and macOS: not done.
 - Audio output probe: done in M2 Phase A (findings in MILESTONE_2_SCOPE_MAP.md); clock drift over minutes measured in B0. Still unprobed: capture devices (forbidden so far; needed at the start of Milestone 5), behavior under CPU load, other buffer sizes.
 - Audible-latency measurement and a latency-compensation setting (the probe only sees the line clock, not the sound).
 - Clock and artifact behavior on macOS and Windows (rerun the probe there).
-- Scrubbing, looping and selection playback.
+- Looping (selection playback: the engine plays a range since M3 Phase A; the UI comes in Phase B).
 - Mute/solo/gain/pan (Milestone 7).
 - Device selection.
 - A click when stopping abruptly (queued audio cannot be faded).
