@@ -20,7 +20,8 @@ import com.jellyfish.timbre.model.Track;
 import java.util.Objects;
 
 /**
- * Adds a track at the end of the project ("Import"); revert removes it again. Redo adds the SAME
+ * Adds a track at the end of the project (named "Import" by default, "Record" for a recording); revert removes it
+ * again. Redo adds the SAME
  * {@link Track} object, so everything that refers to it (clips, sources, pyramids) stays valid.
  *
  * <p><b>Threading:</b> the thread that owns the project (see {@link Project}).
@@ -32,21 +33,34 @@ public final class AddTrackCommand implements Command {
 
     private final Project project;
     private final Track track;
+    private final String name;
 
     /**
-     * Creates the command; nothing happens until {@link #apply()}.
+     * Creates the command named {@link #NAME} ("Import"); nothing happens until {@link #apply()}.
      *
      * @param project the project
      * @param track   the track to add (not yet in the project)
      */
     public AddTrackCommand(Project project, Track track) {
+        this(project, track, NAME);
+    }
+
+    /**
+     * Creates the command with a history name; nothing happens until {@link #apply()}.
+     *
+     * @param project the project
+     * @param track   the track to add (not yet in the project)
+     * @param name    the history name, for example "Record"
+     */
+    public AddTrackCommand(Project project, Track track, String name) {
         this.project = Objects.requireNonNull(project, "project");
         this.track = Objects.requireNonNull(track, "track");
+        this.name = Objects.requireNonNull(name, "name");
     }
 
     @Override
     public String name() {
-        return NAME;
+        return name;
     }
 
     /** @return the track this command adds */
