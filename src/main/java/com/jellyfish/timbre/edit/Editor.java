@@ -17,6 +17,7 @@ package com.jellyfish.timbre.edit;
 
 import com.jellyfish.timbre.model.Clip;
 import com.jellyfish.timbre.model.Project;
+import com.jellyfish.timbre.model.SampleSource;
 import com.jellyfish.timbre.model.Selection;
 import com.jellyfish.timbre.model.Track;
 import java.util.ArrayList;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.function.Function;
 
 /**
@@ -45,6 +47,9 @@ import java.util.function.Function;
  * the tracks, the history and the clipboard).
  */
 public final class Editor {
+
+    /** The history name of {@link #addRecording}. */
+    public static final String RECORD = "Record";
 
     private final Project project;
     private final History history;
@@ -240,6 +245,46 @@ public final class Editor {
             return Optional.empty();
         }
         return run("Split", targets, t -> ClipOps.split(t.clips(), atFrame), Selection.cursor(atFrame));
+    }
+
+    /**
+     * Adds a recording as a new track at the end of the project: one clip covering the whole source
+     * ({@code sourceStart} 0) at timeline frame {@code atFrame}, executed as ONE history entry named "Record" (an
+     * {@link AddTrackCommand}). Undo removes the track; redo adds the same track again.
+     *
+     * <p>Refused (empty result, {@link #lastRefusal()} says why, nothing recorded) when the source has no frames or
+     * when the project has tracks at another sample rate ("sample rate mismatch ..."). Any channel count is fine
+     * (playback spreads mono to both sides).
+     *
+     * @param trackName the new track's name
+     * @param source    the recorded audio
+     * @param atFrame   the timeline position, at least 0 (the cursor or selection start)
+     * @return the outcome; the selection after spans the recording {@code [atFrame, atFrame + frames)}
+     * @throws IllegalArgumentException if {@code atFrame} is negative
+     */
+    public Optional<EditOutcome> addRecording(String trackName, SampleSource source, long atFrame) {
+        Objects.requireNonNull(trackName, "trackName");
+        Objects.requireNonNull(source, "source");
+        lastRefusal = null;
+        if (atFrame < 0) {
+            throw new IllegalArgumentException("atFrame must be >= 0: " + atFrame);
+        }
+        long frames = source.frameCount();
+        if (frames == 0) {
+            lastRefusal = "the recording is empty";
+            return Optional.empty();
+        }
+        OptionalInt rate = project.sampleRate();
+        if (rate.isPresent() && rate.getAsInt() != source.sampleRate()) {
+            lastRefusal = "sample rate mismatch: the project is at " + rate.getAsInt() + " Hz, the recording at "
+                    + source.sampleRate() + " Hz";
+            return Optional.empty();
+        }
+        Track track = new Track(trackName, source.sampleRate(), source.channelCount());
+        track.addClip(new Clip(source, 0, frames, atFrame));
+        Command command = new AddTrackCommand(project, track, RECORD);
+        history.execute(command);
+        return Optional.of(new EditOutcome(command, Selection.between(atFrame, atFrame + frames)));
     }
 
     /** @return true if an edit was undone */

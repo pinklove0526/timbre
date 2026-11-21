@@ -25,7 +25,11 @@ import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
-/** Enforces that the non-UI packages and ui.viewmodel never depend on JavaFX, and that audio and dsp never depend on ui. */
+/**
+ * Enforces that the non-UI packages and ui.viewmodel never depend on JavaFX, that audio and dsp never depend on ui,
+ * that edit imports neither ui nor audio, that model imports neither edit nor audio, and that audio and dsp do not
+ * import edit.
+ */
 class ArchitectureGuardTest {
 
     @Test
@@ -82,7 +86,7 @@ class ArchitectureGuardTest {
         int scanned = 0;
         String[][] rules = {
             {"edit", "import javafx", "import com.jellyfish.timbre.ui", "import com.jellyfish.timbre.audio"},
-            {"model", "import com.jellyfish.timbre.edit"},
+            {"model", "import com.jellyfish.timbre.edit", "import com.jellyfish.timbre.audio"},
             {"audio", "import com.jellyfish.timbre.edit"},
             {"dsp", "import com.jellyfish.timbre.edit"},
         };
