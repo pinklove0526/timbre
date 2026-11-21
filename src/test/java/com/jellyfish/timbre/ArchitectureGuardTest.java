@@ -74,4 +74,36 @@ class ArchitectureGuardTest {
         assertTrue(scanned > 10, "scanner found only " + scanned + " files; wrong working directory?");
         assertTrue(violations.isEmpty(), "audio or dsp imports ui: " + violations);
     }
+
+    @Test
+    void editImportsNeitherUiNorAudioAndModelAudioDspDoNotImportEdit() throws IOException {
+        Path root = Path.of("src/main/java/com/jellyfish/timbre");
+        List<String> violations = new ArrayList<>();
+        int scanned = 0;
+        String[][] rules = {
+            {"edit", "import javafx", "import com.jellyfish.timbre.ui", "import com.jellyfish.timbre.audio"},
+            {"model", "import com.jellyfish.timbre.edit"},
+            {"audio", "import com.jellyfish.timbre.edit"},
+            {"dsp", "import com.jellyfish.timbre.edit"},
+        };
+        for (String[] rule : rules) {
+            Path dir = root.resolve(rule[0]);
+            assertTrue(Files.isDirectory(dir), "missing package directory " + dir);
+            try (Stream<Path> files = Files.walk(dir)) {
+                for (Path f : files.filter(p -> p.toString().endsWith(".java")).toList()) {
+                    scanned++;
+                    List<String> lines = Files.readAllLines(f);
+                    for (int i = 0; i < lines.size(); i++) {
+                        for (int k = 1; k < rule.length; k++) {
+                            if (lines.get(i).contains(rule[k])) {
+                                violations.add(f + ":" + (i + 1) + " " + rule[k]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assertTrue(scanned > 20, "scanner found only " + scanned + " files; wrong working directory?");
+        assertTrue(violations.isEmpty(), "forbidden imports: " + violations);
+    }
 }

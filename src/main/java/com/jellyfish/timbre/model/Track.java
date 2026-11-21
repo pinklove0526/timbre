@@ -23,8 +23,9 @@ import java.util.Objects;
 /**
  * A named, ordered set of non-overlapping {@link Clip}s. Gaps between clips are silence.
  *
- * <p><b>Threading:</b> mutable; in Milestone 1 it is used from one thread at a time.
- * Use {@link #snapshot()} to hand the audio to other threads.
+ * <p><b>Threading:</b> mutable and not thread-safe: mutate it ({@link #addClip}, {@link #replaceClips}) from
+ * one thread only (the JavaFX application thread in the app). Use {@link #snapshot()} to hand the audio to
+ * other threads: a snapshot is immutable and a later edit never changes it.
  */
 public final class Track {
 
@@ -95,6 +96,18 @@ public final class Track {
      */
     public void addClip(Clip clip) {
         Objects.requireNonNull(clip, "clip");
+        checkCompatible(clip);
+        int index = insertionIndex(clip.timelineStart());
+        if (index > 0 && clips.get(index - 1).timelineEnd() > clip.timelineStart()) {
+            throw new IllegalArgumentException("clip overlaps the previous clip");
+        }
+        if (index < clips.size() && clips.get(index).timelineStart() < clip.timelineEnd()) {
+            throw new IllegalArgumentException("clip overlaps the next clip");
+        }
+        clips.add(index, clip);
+    }
+
+    private void checkCompatible(Clip clip) {
         SampleSource src = clip.source();
         if (src.sampleRate() != sampleRate) {
             throw new IllegalArgumentException("clip sample rate " + src.sampleRate()
@@ -104,14 +117,41 @@ public final class Track {
             throw new IllegalArgumentException("clip has " + src.channelCount()
                     + " channels, track has " + channelCount);
         }
-        int index = insertionIndex(clip.timelineStart());
-        if (index > 0 && clips.get(index - 1).timelineEnd() > clip.timelineStart()) {
-            throw new IllegalArgumentException("clip overlaps the previous clip");
+    }
+
+    /**
+     * Replaces all clips at once. The new list must be well-formed: sorted by timeline start, non-overlapping
+     * (a clip may start exactly where the previous one ends), and every clip's source must have the track's
+     * sample rate and channel count, exactly as {@link #addClip} checks. Frame counts above 0 and timeline
+     * starts of at least 0 are guaranteed by {@link Clip} itself. If any check fails nothing changes.
+     *
+     * @param newClips the new clips (copied); may be empty
+     * @throws NullPointerException     if the list or an element is null
+     * @throws IllegalArgumentException if the list is not well-formed or a clip is incompatible; the track is
+     *                                  left unchanged
+     */
+    public void replaceClips(List<Clip> newClips) {
+        Objects.requireNonNull(newClips, "newClips");
+        List<Clip> copy = new ArrayList<>(newClips.size());
+        Clip previous = null;
+        for (Clip c : newClips) {
+            Objects.requireNonNull(c, "clip");
+            checkCompatible(c);
+            if (previous != null) {
+                if (c.timelineStart() < previous.timelineStart()) {
+                    throw new IllegalArgumentException("clips are not sorted by timeline start at index "
+                            + copy.size());
+                }
+                if (c.timelineStart() < previous.timelineEnd()) {
+                    throw new IllegalArgumentException("clip at index " + copy.size()
+                            + " overlaps the previous clip");
+                }
+            }
+            copy.add(c);
+            previous = c;
         }
-        if (index < clips.size() && clips.get(index).timelineStart() < clip.timelineEnd()) {
-            throw new IllegalArgumentException("clip overlaps the next clip");
-        }
-        clips.add(index, clip);
+        clips.clear();
+        clips.addAll(copy);
     }
 
     private int insertionIndex(long timelineStart) {
