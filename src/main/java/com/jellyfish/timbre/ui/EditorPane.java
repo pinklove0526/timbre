@@ -15,24 +15,27 @@
  */
 package com.jellyfish.timbre.ui;
 
-import com.jellyfish.timbre.audio.AudioDeviceException;
 import com.jellyfish.timbre.audio.MixPlan;
 import com.jellyfish.timbre.audio.PlaybackEngine;
 import com.jellyfish.timbre.audio.PlaybackListener;
 import com.jellyfish.timbre.audio.WavFile;
 import com.jellyfish.timbre.audio.WavReader;
 import com.jellyfish.timbre.model.Track;
+import com.jellyfish.timbre.ui.viewmodel.FollowPolicy;
 import com.jellyfish.timbre.ui.viewmodel.LaneGeometry;
 import com.jellyfish.timbre.ui.viewmodel.ScrollbarMapping;
 import com.jellyfish.timbre.ui.viewmodel.TimeAxis;
+import com.jellyfish.timbre.ui.viewmodel.TransportRules;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
+import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
@@ -41,8 +44,15 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
@@ -68,8 +78,9 @@ import javafx.stage.FileChooser;
  */
 public final class EditorPane extends BorderPane implements AutoCloseable {
 
-    private final PlaybackEngine engine = new PlaybackEngine();
+    private final PlaybackEngine engine;
     private final EditorModel model = new EditorModel();
+    private final EditorActions actions;
     private MixPlan plan = MixPlan.empty();
 
     private final Label stateLabel = new Label("STOPPED");
@@ -79,10 +90,12 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     private final Button pauseButton = new Button("Pause");
     private final Button stopButton = new Button("Stop");
     private final MenuItem clearItem = new MenuItem("Clear tracks");
+    private final MenuBar menuBar = new MenuBar();
 
     private final RulerView ruler = new RulerView(model);
     private final VBox tracksBox = new VBox();
     private final OverlayView overlay = new OverlayView(model);
+    private final Pane inputPane = new Pane();
     private final ScrollPane scrollPane = new ScrollPane();
     private final ScrollBar scrollBar = new ScrollBar();
     private final StatusBarView statusBar = new StatusBarView();
@@ -92,6 +105,11 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     private int paintedWaveform = -1;
     private int paintedOverlay = -1;
     private double paintedOverlayHeight = -1;
+    private double paintedOffsetY = -1;
+    private double paintedRowsHeight = -1;
+    private boolean gestureActive;
+    private Scene keyScene;
+    private final javafx.event.EventHandler<KeyEvent> keyFilter = this::onKey;
     private final AnimationTimer timer = new AnimationTimer() {
         @Override
         public void handle(long now) {
@@ -99,14 +117,38 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         }
     };
 
-    /** Creates the pane and starts its animation timer. */
+    /** Creates the pane with the real audio engine and starts its animation timer. */
     public EditorPane() {
+        this(new PlaybackEngine());
+    }
+
+    /**
+     * Creates the pane around a given engine (tests inject one that plays through the fake sink).
+     *
+     * @param engine the engine; the pane closes it in {@link #close()}
+     */
+    EditorPane(PlaybackEngine engine) {
+        this.engine = Objects.requireNonNull(engine, "engine");
+        this.actions = new EditorActions(model, engine, this::showMessage);
         MenuItem open = new MenuItem("Open WAV...");
         open.setOnAction(e -> openWav());
         clearItem.setOnAction(e -> clearTracks());
         MenuItem exit = new MenuItem("Exit");
         exit.setOnAction(e -> Platform.exit());
-        MenuBar menuBar = new MenuBar(new Menu("File", null, open, clearItem, new SeparatorMenuItem(), exit));
+        menuBar.getMenus().addAll(new Menu("File", null, open, clearItem, new SeparatorMenuItem(), exit),
+                new Menu("View", null,
+                        item("Zoom In", new KeyCodeCombination(KeyCode.DIGIT1, KeyCombination.SHORTCUT_DOWN),
+                                actions::zoomIn),
+                        item("Zoom Out", new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN),
+                                actions::zoomOut),
+                        item("Fit Project", new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN),
+                                actions::fitProject)),
+                new Menu("Select", null,
+                        item("Select All", new KeyCodeCombination(KeyCode.A, KeyCombination.SHORTCUT_DOWN),
+                                actions::selectAll),
+                        item("Clear Selection", new KeyCodeCombination(KeyCode.ESCAPE), actions::clearSelection),
+                        item("Cursor to Start", new KeyCodeCombination(KeyCode.HOME), actions::cursorToStart),
+                        item("Cursor to End", new KeyCodeCombination(KeyCode.END), actions::cursorToEnd)));
 
         HBox transport = new HBox(8, playButton, pauseButton, stopButton, stateLabel, statsLabel, messageLabel);
         transport.setAlignment(Pos.CENTER_LEFT);
@@ -121,20 +163,29 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         HBox rulerRow = new HBox(rulerSpacer, ruler, rulerPad);
         rulerRow.setId("rulerRow");
 
-        StackPane content = new StackPane(tracksBox, overlay);
-        StackPane.setAlignment(tracksBox, Pos.TOP_LEFT);
-        StackPane.setAlignment(overlay, Pos.TOP_LEFT);
-        StackPane.setMargin(overlay, new Insets(0, 0, 0, Theme.HEADER_WIDTH));
-        scrollPane.setContent(content);
+        scrollPane.setContent(tracksBox);
         scrollPane.setFitToWidth(true);
         scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.ALWAYS);
         scrollPane.setStyle("-fx-padding: 0; -fx-background-insets: 0; -fx-background-color: transparent;");
         scrollPane.setId("trackScroll");
-        rulerPad.prefWidthProperty().bind(scrollPane.widthProperty().subtract(content.widthProperty()));
-        overlay.heightProperty().bind(tracksBox.heightProperty());
-        content.widthProperty().addListener((obs, old, now) ->
+        rulerPad.prefWidthProperty().bind(scrollPane.widthProperty().subtract(tracksBox.widthProperty()));
+        tracksBox.widthProperty().addListener((obs, old, now) ->
                 model.setLaneWidth(Math.max(1, now.intValue() - Theme.HEADER_WIDTH)));
+        // Ctrl or Shift wheel over the headers must not scroll the track stack
+        scrollPane.addEventFilter(ScrollEvent.SCROLL, e -> {
+            if (e.isShortcutDown() || e.isShiftDown()) {
+                e.consume();
+            }
+        });
+
+        StackPane center = new StackPane(scrollPane, overlay, inputPane);
+        StackPane.setAlignment(overlay, Pos.TOP_LEFT);
+        StackPane.setAlignment(inputPane, Pos.TOP_LEFT);
+        StackPane.setMargin(overlay, new Insets(0, 0, 0, Theme.HEADER_WIDTH));
+        StackPane.setMargin(inputPane, new Insets(0, 0, 0, Theme.HEADER_WIDTH));
+        inputPane.setId("input");
+        installMouseHandlers();
 
         Region barSpacer = new Region();
         barSpacer.setMinWidth(Theme.HEADER_WIDTH);
@@ -156,12 +207,13 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         });
 
         setTop(new VBox(menuBar, transport, rulerRow));
-        setCenter(scrollPane);
+        setCenter(center);
         setBottom(new VBox(barRow, statusBar));
 
-        playButton.setOnAction(e -> play());
-        pauseButton.setOnAction(e -> togglePause());
-        stopButton.setOnAction(e -> engine.stop());
+        playButton.setOnAction(e -> actions.play());
+        pauseButton.setOnAction(e -> actions.togglePause());
+        stopButton.setOnAction(e -> actions.stop());
+        sceneProperty().addListener((obs, old, now) -> installKeyFilter(now));
         engine.addListener(new PlaybackListener() {
             @Override
             public void stateChanged(PlaybackEngine.State oldState, PlaybackEngine.State newState) {
@@ -214,9 +266,39 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         return scrollPane;
     }
 
-    /** @return the engine (state and position only are used in B1) */
+    /** @return the engine */
     PlaybackEngine engine() {
         return engine;
+    }
+
+    /** @return the interaction actions */
+    EditorActions actions() {
+        return actions;
+    }
+
+    /** @return the transparent input pane over the lane area */
+    Pane inputPane() {
+        return inputPane;
+    }
+
+    /** @return the menu bar (File, View, Select) */
+    MenuBar menuBar() {
+        return menuBar;
+    }
+
+    /** @return the Play button */
+    Button playButton() {
+        return playButton;
+    }
+
+    /** @return the Pause / Resume button */
+    Button pauseButton() {
+        return pauseButton;
+    }
+
+    /** @return the Stop button */
+    Button stopButton() {
+        return stopButton;
     }
 
     // ------------------------------------------------------------------ tracks
@@ -279,9 +361,7 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     }
 
     private void clearTracks() {
-        if (engine.state() != PlaybackEngine.State.STOPPED) {
-            return;
-        }
+        engine.stop();
         model.clear();
         rows.clear();
         tracksBox.getChildren().clear();
@@ -291,27 +371,124 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         refreshAll();
     }
 
-    // ------------------------------------------------------------------ transport
+    // ------------------------------------------------------------------ menus, keys, mouse
 
-    private void play() {
-        try {
-            if (!engine.play(model.selection().startFrame())) {
-                showMessage("Nothing to play from this position.");
-            } else {
-                showMessage("");
+    private static MenuItem item(String text, KeyCombination accelerator, Runnable action) {
+        MenuItem m = new MenuItem(text);
+        m.setAccelerator(accelerator);
+        m.setOnAction(e -> action.run());
+        return m;
+    }
+
+    private void installKeyFilter(Scene scene) {
+        if (keyScene != null) {
+            keyScene.removeEventFilter(KeyEvent.KEY_PRESSED, keyFilter);
+            keyScene.removeEventFilter(KeyEvent.KEY_RELEASED, keyFilter);
+        }
+        keyScene = scene;
+        if (scene != null) {
+            scene.addEventFilter(KeyEvent.KEY_PRESSED, keyFilter);
+            scene.addEventFilter(KeyEvent.KEY_RELEASED, keyFilter); // only to swallow the release of Space
+        }
+    }
+
+    /**
+     * The single key filter. It handles and consumes every shortcut itself (the menu accelerators exist for
+     * display and are not reached because the event is consumed here); Space is consumed on press and on
+     * release so a focused button never fires.
+     */
+    private void onKey(KeyEvent e) {
+        KeyCode code = e.getCode();
+        boolean shortcutOnly = e.isShortcutDown() && !e.isShiftDown() && !e.isAltDown();
+        boolean plain = !e.isShortcutDown() && !e.isShiftDown() && !e.isAltDown() && !e.isMetaDown()
+                && !e.isControlDown();
+        if (e.getEventType() == KeyEvent.KEY_RELEASED) {
+            if (code == KeyCode.SPACE && plain) {
+                e.consume();
             }
-        } catch (AudioDeviceException e) {
-            showMessage(e.getMessage());
+            return;
+        }
+        Runnable action = null;
+        if (plain) {
+            switch (code) {
+                case SPACE -> action = actions::toggleSpace;
+                case P -> action = actions::togglePause;
+                case ESCAPE -> action = actions::clearSelection;
+                case HOME -> action = actions::cursorToStart;
+                case END -> action = actions::cursorToEnd;
+                default -> { }
+            }
+        } else if (shortcutOnly) {
+            switch (code) {
+                case A -> action = actions::selectAll;
+                case DIGIT1 -> action = actions::zoomIn;
+                case DIGIT3 -> action = actions::zoomOut;
+                case F -> action = actions::fitProject;
+                default -> { }
+            }
+        }
+        if (action != null) {
+            e.consume();
+            action.run();
         }
     }
 
-    private void togglePause() {
-        if (engine.state() == PlaybackEngine.State.PLAYING) {
-            engine.pause();
-        } else if (engine.state() == PlaybackEngine.State.PAUSED) {
-            engine.resume();
-        }
+    private void installMouseHandlers() {
+        inputPane.setOnMousePressed(e -> {
+            if (e.getButton() == MouseButton.PRIMARY && e.getY() + scrollOffsetY() < lanesHeight()) {
+                gestureActive = actions.onPress(e.getX(), e.isShiftDown());
+            } else {
+                gestureActive = false;
+            }
+            e.consume();
+        });
+        inputPane.setOnMouseDragged(e -> {
+            if (gestureActive) {
+                actions.onDrag(e.getX());
+            }
+            e.consume();
+        });
+        inputPane.setOnMouseReleased(e -> {
+            if (gestureActive) {
+                actions.onRelease(e.getX());
+                gestureActive = false;
+            }
+            e.consume();
+        });
+        inputPane.addEventHandler(ScrollEvent.SCROLL, e -> {
+            boolean used = actions.onWheel(e.getX(), e.getDeltaX(), e.getDeltaY(), e.isShortcutDown(),
+                    e.isShiftDown());
+            if (!used && e.getDeltaY() != 0) {
+                scrollVertical(e.getDeltaY());
+                used = true;
+            }
+            if (used) {
+                e.consume();
+            }
+        });
     }
+
+    /** @return the viewport height of the track stack, at least 1 */
+    private double viewportHeight() {
+        return Math.max(1.0, scrollPane.getViewportBounds().getHeight());
+    }
+
+    /** @return how far the track stack is scrolled up, in pixels */
+    private double scrollOffsetY() {
+        double range = lanesHeight() - viewportHeight();
+        return range <= 0 ? 0 : scrollPane.getVvalue() * range;
+    }
+
+    private void scrollVertical(double deltaY) {
+        double range = lanesHeight() - viewportHeight();
+        if (range <= 0) {
+            return;
+        }
+        double offset = Math.min(range, Math.max(0, scrollOffsetY() - deltaY));
+        scrollPane.setVvalue(offset / range);
+    }
+
+    // ------------------------------------------------------------------ transport
 
     private void showMessage(String text) {
         messageLabel.setText(text);
@@ -320,11 +497,10 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     private void refreshAll() {
         PlaybackEngine.State s = engine.state();
         stateLabel.setText(s.name());
-        playButton.setDisable(plan.isEmpty());
-        pauseButton.setText(s == PlaybackEngine.State.PAUSED ? "Resume" : "Pause");
-        pauseButton.setDisable(s == PlaybackEngine.State.STOPPED);
-        stopButton.setDisable(s == PlaybackEngine.State.STOPPED);
-        clearItem.setDisable(s != PlaybackEngine.State.STOPPED);
+        playButton.setDisable(!TransportRules.playEnabled(s) || plan.isEmpty());
+        pauseButton.setText(TransportRules.pauseLabelIsResume(s) ? "Resume" : "Pause");
+        pauseButton.setDisable(!TransportRules.pauseEnabled(s));
+        stopButton.setDisable(!TransportRules.stopEnabled(s));
     }
 
     // ------------------------------------------------------------------ painting
@@ -334,16 +510,48 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         if (s == PlaybackEngine.State.STOPPED) {
             model.clearPlayhead();
         } else {
-            model.setPlayheadFrame(engine.positionFrames());
+            long pos = engine.positionFrames();
+            model.setPlayheadFrame(pos);
+            if (s == PlaybackEngine.State.PLAYING) {
+                follow(pos);
+            }
         }
         statsLabel.setText("Suspected underruns: " + engine.stats().suspectedUnderruns());
         repaintNow();
     }
 
+    /** Pages the view when the playhead leaves the window or passes 95% of its width ({@link FollowPolicy}). */
+    private void follow(long playheadFrame) {
+        TimeAxis a = model.axis();
+        TimeAxis.Limits limits = model.limits();
+        long scroll = FollowPolicy.scrollFor(playheadFrame, a, model.laneWidth(), limits);
+        if (scroll != a.scrollFrame()) {
+            model.setAxis(a.scrolledTo(scroll, limits));
+        }
+    }
+
+    /**
+     * Stops the animation timer so that pulses only happen when {@link #pulseNow()} is called. A test hook
+     * for deterministic event-driven tests; {@link #close()} stops the timer anyway.
+     */
+    void stopAnimationTimer() {
+        timer.stop();
+    }
+
+    /**
+     * Runs one animation pulse now: reads the engine state, moves the playhead, applies the follow step
+     * while PLAYING and repaints what is dirty. The animation timer calls the same method; tests call it
+     * on the FX thread to avoid waiting for a pulse.
+     */
+    void pulseNow() {
+        pulse();
+    }
+
     /**
      * Repaints whatever is dirty: the waveform layer and the ruler if {@link EditorModel#waveformVersion()}
-     * changed, the overlay if its version, its height or the playing state says so, and updates the
-     * scrollbar and the status bar. Called on every animation pulse; tests call it after a layout pass.
+     * changed; the overlay if its version, its size, the vertical scroll offset or the rows extent changed
+     * or the engine is not STOPPED; and updates the scrollbar and the status bar. Called on every animation
+     * pulse; tests call it after a layout pass.
      */
     public void repaintNow() {
         boolean waveformDirty = model.waveformVersion().get() != paintedWaveform;
@@ -355,15 +563,25 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
                 row.repaintLanes();
             }
         }
-        if (overlay.getWidth() != model.laneWidth()) {
-            overlay.setWidth(model.laneWidth());
+        double w = model.laneWidth();
+        double h = viewportHeight();
+        if (overlay.getWidth() != w || overlay.getHeight() != h) {
+            overlay.setWidth(w);
+            overlay.setHeight(h);
+            inputPane.setPrefSize(w, h);
+            inputPane.setMinSize(w, h);
+            inputPane.setMaxSize(w, h);
             paintedOverlay = -1;
         }
+        double offsetY = scrollOffsetY();
+        double rowsH = lanesHeight();
         boolean playing = engine.state() != PlaybackEngine.State.STOPPED;
-        if (playing || paintedOverlay != model.overlayVersion().get()
-                || paintedOverlayHeight != overlay.getHeight()) {
+        if (playing || paintedOverlay != model.overlayVersion().get() || paintedOffsetY != offsetY
+                || paintedRowsHeight != rowsH) {
             paintedOverlay = model.overlayVersion().get();
-            paintedOverlayHeight = overlay.getHeight();
+            paintedOffsetY = offsetY;
+            paintedRowsHeight = rowsH;
+            overlay.setViewport(offsetY, rowsH);
             overlay.repaint();
             statusBar.update(model.selection(), model.playheadFrame(), model.sampleRate());
         }

@@ -175,4 +175,16 @@ class SelectionControllerTest {
         c.release(90);
         assertEquals(Selection.cursor(0), c.selection());
     }
+
+    @Test
+    void setSelectionFromOutsideMovesTheAnchorToItsStartAndClamps() {
+        SelectionController c = new SelectionController(new TimeAxis(44100, 100.0, 0), 50_000);
+        c.press(100, false); // anchor 10000
+        c.setSelection(new com.jellyfish.timbre.model.Selection(20_000, 80_000)); // end beyond the project
+        assertEquals(new com.jellyfish.timbre.model.Selection(20_000, 50_000), c.selection());
+        assertEquals(20_000, c.anchor());
+        assertEquals(false, c.isPressed());
+        c.press(400, true); // extends from the anchor 20000 to frame 40000
+        assertEquals(new com.jellyfish.timbre.model.Selection(20_000, 40_000), c.selection());
+    }
 }
