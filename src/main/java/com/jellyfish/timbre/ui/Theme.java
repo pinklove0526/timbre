@@ -46,8 +46,12 @@ public final class Theme {
     public static final Color RULER_BACKGROUND = Color.rgb(0xE9, 0xEC, 0xF1);
     /** Ruler ticks and labels (#38404B). */
     public static final Color RULER_INK = Color.rgb(0x38, 0x40, 0x4B);
-    /** Track header background as a CSS colour. */
-    public static final String HEADER_BACKGROUND_CSS = "#DDE2E9";
+    /** Track header background (#DDE2E9). */
+    public static final Color TRACK_HEADER_BACKGROUND = Color.rgb(0xDD, 0xE2, 0xE9);
+    /** Background of a selected track header, a darker blue-grey (#A9B8CC). */
+    public static final Color TRACK_SELECTED_BACKGROUND = Color.rgb(0xA9, 0xB8, 0xCC);
+    /** Clip border line in the lanes, a dark slate (#4A5563). */
+    public static final Color CLIP_BORDER = Color.rgb(0x4A, 0x55, 0x63);
 
     /** Width of the track header in pixels. */
     public static final int HEADER_WIDTH = 120;

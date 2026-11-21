@@ -84,5 +84,82 @@ Branch `feature/pinklove0526/m4a-edit-core`, from develop `12f37a3` (merge of PR
 - **Dist:** `-Pdist package` exit 0, `--version` prints `Timbre 0.1.0-SNAPSHOT`, the edit classes and the glass natives are in the universal jar, none of our test classes (`13-dist` to `15-jar-list`).
 - **Deviations:** the benchmark mix leaves out trim (a random trim collapses a 3000-clip track and makes the rest of the run meaningless); tests were run per group of classes rather than strictly per class.
 
+## Phase B - editing UI
+Branch `feature/pinklove0526/m4b-editing-ui`, from develop `8f9d4bc` (merge of PR #12, Phase A). No sound in this phase; every playing test uses the fake sink.
+
+### Settled decisions (user-approved defaults; decisions 6 and 11 partly added by the user and flagged)
+1. **Track selection.** A plain click on a track header selects only that track; Ctrl/Cmd+click toggles a track and sets the anchor; Shift+click selects the range from the anchor to the clicked track (Ctrl/Cmd+Shift+click adds the range); with no anchor Shift behaves as a plain click. Selected headers are drawn darker. Clicking in a lane or pressing Esc does not change the track selection. Removed tracks drop out of the selection. Edits apply to the selected tracks, or to ALL tracks when none is selected. Track selection is not part of the undo history.
+2. **Undo/redo restore the time selection** from before/after the edit (a selection trail beside the History); the track selection is not restored.
+3. **Add/remove tracks**, headless first (Step 0): `Project` removal and insertion; undoable `AddTrackCommand` / `RemoveTrackCommand`. File > Open WAV is an undoable "Import". Track > Remove Track removes the SELECTED tracks (needs an explicit selection, never "all"), one history entry "Remove Track".
+4. **Clear tracks stays non-undoable:** it stops the engine first, clears the History, the Clipboard, the selection trail and the track selection, resets the time selection to the cursor at 0 and the axis to the empty-project default, and marks the History saved.
+5. **Edit menu:** Undo <name> / Redo <name> with live names ("Undo Cut"; plain "Undo" when empty and disabled), then Cut, Copy, Paste, Delete, Silence, Trim, Split. Shortcuts: Ctrl/Cmd+X, C, V; Delete and Backspace (both delete); Ctrl/Cmd+L (silence), T (trim), I (split); Ctrl/Cmd+Z undo; Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z redo. Menu accelerators where the B2 design used them; the scene filter only for keys that cannot be accelerators; everything calls the same `EditorActions` methods.
+6. **Locking:** while PLAYING or PAUSED, Cut, Paste, Delete, Silence, Trim, Split, Undo, Redo, Import and Remove Track are disabled/ignored. Flagged (added by the user): Copy stays allowed while playing or paused, and track selection by header click stays allowed.
+7. **Enabling rules:** Cut/Delete/Silence/Trim/Copy need a non-empty time selection and at least one track; Paste needs a non-empty clipboard and at least one target track; Split needs at least one track; Remove Track needs at least one explicitly selected track; Undo/Redo follow the History. `EditorActions.refreshEnabled()` runs after every action, History change, engine state change and track-selection change (a disabled item's accelerator does not fire).
+8. **Clip borders:** a 1 px vertical line in `Theme.CLIP_BORDER` at each visible clip start and end inside the lane rows (rows 0..89), drawn after the bands/polyline and before the separator row; coinciding lines once.
+9. **After every edit** (cut, paste, delete, silence, trim, split, undo, redo, import, remove): rebuild the playback plan from fresh snapshots (engine stopped), recompute the project length, re-clamp the axis, mark the waveform dirty, update the scrollbar, apply the time selection (the outcome's for edits, the trail's for undo/redo) and scroll its start into view by the minimum amount if needed. Pyramids are requested only for new sources (import).
+10. **Window title:** "Timbre" plus " *" while `History.isModified()`; saved at startup and after Clear tracks (file saving is M7).
+11. **Refused edits** show their reason in a message label at the right of the status bar until the next action; never blocking. Flagged (added by the user).
+
+Non-goals: dragging clips, system clipboard, join/merge of clips, labels, snapping, per-clip gain, crossfades, project save/load (M7), HiDPI check.
+
+### Design
+- **Step 0 (headless):** `Project.insertTrack(index, track)`, `removeTrack(track)` (returns the index), `indexOf(track)`; the project sample rate is now DERIVED from the tracks (before: a field set by the first `addTrack` and never cleared), so removing the last track frees it and re-inserting restores it. `edit.AddTrackCommand` ("Import"), `edit.RemoveTrackCommand` (index recorded at apply time; `forTracks` builds one `CompoundCommand` "Remove Track" in descending index order).
+- **`ui.viewmodel`:** `TrackSelection` (identity, anchor, `click`, `retain`, `clear`, `selected`, `targets`), `ClipBoundaries` (border columns), `SelectionTrail` (before/after selections in lockstep with the History), `TransportRules.editsLocked` and `copyAllowed`.
+- **`ui`:** `EditorModel` gains the `Editor`, `History`, `Clipboard`, `TrackSelection`, `SelectionTrail`, a message property and a modified property; `EditorActions` gains cut, copy, paste, deleteSelection, silence, trim, split, undo, redo, removeSelectedTracks, selectTrack, importFile(Path), clearTracks and refreshEnabled, plus the after-edit pipeline; `EditorPane` gains the Edit and Track menus, Open WAV through `importFile`, a title property and the status-bar message label; `TrackHeaderView` shows the selected state (`Theme.TRACK_SELECTED_BACKGROUND`, style class "selected") and forwards header presses; `LaneView`/`WaveformPainter` draw the clip borders; `Theme` gains `CLIP_BORDER` and `TRACK_SELECTED_BACKGROUND`.
+
+### Test plan
+Headless: `TrackCommandsTest`, `TrackCommandsRandomTest` (oracle-lite, 40 seeds), `TrackSelectionTest`, `ClipBoundariesTest`, `SelectionTrailTest` (with a lockstep test against a real History), `TransportRulesTest` update, architecture guard. Opt-in `EditorEditingFxTest` (`-Dtimbre.fx=true`), cases (a) to (m), PNGs in `build-logs/m4b/png`. Mutations: `insertTrack` off by one and the removal order (Step 0); the Cut lock, the plan rebuild, `SelectionTrail.undo`, the track range, the `ClipBoundaries` end line (FX and headless).
+
+### B adaptations
+Design versus the real code. Beyond the Step 0 `Project` change, model, audio and dsp are untouched.
+1. **Project sample rate.** Before, `Project` kept the rate in a field set by the first `addTrack` and never cleared. It is now derived from the tracks (none for an empty project, otherwise the first track's rate), so removing the last track frees it and undo restores it with no extra state. `addTrack` now also refuses a track that is already in the project (it goes through `insertTrack`).
+2. **`RemoveTrackCommand.forTracks`** builds the one "Remove Track" compound (descending index order). Each part records its index at apply time, so the apply order does not actually matter (the ascending-order mutation is equivalent, see results).
+3. **Import path.** `EditorActions.importFile(Path)` reads the file on the calling thread (the test hook). File > Open WAV keeps reading on its background thread and then calls `EditorActions.importTrack(Track)` on the FX thread; from there both paths are the same.
+4. **Messages.** `EditorActions` no longer takes a message consumer: every message goes to `EditorModel.setMessage` and shows in the status bar's right-hand label. The B2 message label in the transport row is gone. Any `Editor.lastRefusal()` is shown, including "nothing to change".
+5. **Plan ownership.** `EditorActions` owns the plan (`rebuildPlan()`, `plan()`); `EditorPane` no longer keeps its own.
+6. **Clear tracks** empties the SAME `Project` object (the `Editor` keeps its reference) and resets history (saved), clipboard, trail, track selection, time selection, axis and message in `EditorModel.clear()`.
+7. **Axis re-clamp keeps the zoom.** After an edit the scroll position is limited to the new range and the zoom is kept (the M3 rule: a project-length change never re-fits). A new sample rate or an empty project gets the fitted axis. A first version also clamped the zoom; the FX test caught it (see results).
+8. **Rows follow the project.** `EditorPane` keeps one `TrackRowView` per `Track` by identity and re-syncs on `EditorModel.tracksVersion()`. It installs the header press handler and shows the selected state with `Theme.TRACK_SELECTED_BACKGROUND` / `TRACK_HEADER_BACKGROUND` as a `Background`. The old CSS string constant was replaced by the colour.
+9. **Title.** `EditorPane.titleProperty()` plus `setTitleBase(String)`: `TimbreApp` passes the app name and binds the stage title, so `ui` does not depend on `app`.
+10. **Enabling.** `EditorActions` exposes enabling properties that the menu items bind (Delete, Silence and Trim share Cut's rule) and live Undo/Redo labels.
+11. **Shortcuts.** The edit shortcuts are Edit-menu accelerators (they do not fire while the item is disabled). Backspace and Ctrl/Cmd+Shift+Z cannot be a second accelerator, so the B2 scene filter handles them and calls the same methods, which check the same rules.
+12. **Clip borders of touching clips.** With the settled formula, two touching clips give one shared column only when the lines coincide (a left clip narrower than the column). Usually they give two neighbouring columns (end line at `c - 1`, start line at `c`). `ClipBoundariesTest` asserts both.
+13. **Ctrl/Cmd+Shift+click without an anchor** is a plain click, as Shift+click is.
+14. **Track menu.** Decision 3 reads "New Track > Remove Track"; implemented as a "Track" menu with "Remove Track" (the menu that list items in the prompt name).
+15. **Status bar.** The cursor and selection readouts keep their preferred width; a long message is cut with an ellipsis. Found visually in the refusal PNG, now asserted in case (l).
+
+### Phase B results
+Branch `feature/pinklove0526/m4b-editing-ui`, from develop `8f9d4bc`. Logs and predictions in `build-logs/m4b` (git-ignored; `predictions.txt` pairs every prediction with its result).
+- **Suite:** 475 run, 0 failures, 0 errors, 40 skipped (27 earlier plus the 13 methods of the opt-in `EditorEditingFxTest`), 36.2 s (`14-full-test`), 0 compiler warnings after deleting the compiled classes. Executed 435, up from 411 (+24: `TrackCommandsTest` 5, `TrackCommandsRandomTest` 1, `TrackSelectionTest` 9, `ClipBoundariesTest` 6, `SelectionTrailTest` 3; `TransportRulesTest` gained assertions, not tests). After Step 0 alone: 444 run, 27 skipped. The new headless classes plus `TransportRulesTest` and the architecture guard ran three times (31 tests each, 0 failures).
+- **Step 0 random test:** 40 seeds x 50 steps: 567 imports, 350 removals, 201 edits, 379 undos, 59 redos, 168 refused (mismatching-rate) imports; track order, Track identity and rendered samples match the oracle after every step.
+- **FX:** `EditorEditingFxTest` 13/13 in three consecutive final runs (cases a to m); B1 `EditorRenderFxTest` 10/10 and B2 `EditorInteractionFxTest` 10/10. The first run had 3 failures: one literal of mine (case f), and two (c, d) from a real defect (the axis re-clamp also clamped the zoom, adaptation 7), fixed in the code.
+- **Mutations** (assertion failures only, sha256 restored each time):
+
+  | Mutation | Failing tests |
+  |---|---|
+  | S1 `insertTrack` at index + 1 | 4 headless |
+  | S2 removal in ascending order | none: equivalent mutant (indices recorded at apply time) |
+  | S2b removal revert appends at the end (replaces S2) | 3 headless |
+  | F1 Cut skips the editing lock | FX e |
+  | F2 no plan rebuild after an edit | FX b |
+  | F3 `SelectionTrail.undo` returns "after" | FX b, c, d + `SelectionTrailTest` 3 |
+  | F4 track range one short | FX a, h + `TrackSelectionTest` 4 |
+  | F5 end line at `column(end)` | FX c, d, k, m + `ClipBoundariesTest` 5 of 6 |
+  | F6 (extra) status readouts may shrink | FX l |
+- **Changed existing assertions** (all in B1 `EditorRenderFxTest`, because clip borders now draw over rows 0..89 of each clip's first and last column; every other assertion is unchanged): (a) DIRECT and PEAKS, columns 0 and 999; (b) placeholder and silence, columns 0 and 999; (c) both stereo lanes, columns 0 and 999; (d) columns 100, 299, 500 and 599; (e) the left part of dot 0 at column 0 (the start border of clip [0, 16)); (h) before and after readiness, columns 0 and 999. Each now expects `Theme.CLIP_BORDER` on rows 0..89 and the separator on row 90.
+- **PNGs** (`build-logs/m4b/png`): `a-header-selected`, `b-after-cut`, `c-after-paste`, `d-silence`, `d-split`, `k-after-cut`, `l-refusal`, `m-borders`.
+- **Dist:** `-Pdist package` exit 0, `--version` prints `Timbre 0.1.0-SNAPSHOT`, natives for all three platforms and the new classes in the jar, none of our test classes (`18-dist` to `20-jar-list`).
+- **Deviations:** the Step 0 code was written before the docs (Step 1); the test helper `awaitState` polls with 1 ms sleeps on the test thread (as in B2) while the engine changes state; the status-bar readout fix and its assertion were added beyond the prompt.
+- **Not verified:** real mouse and keyboard (all events synthetic), real audio, HiDPI, the macOS Command key mapping, a real window title bar, very large histories (the Phase A benchmark covered 2000 operations).
+
 ## Manual acceptance (user)
-(stub; written with Phase B)
+Run `source ./dev-env.sh; mvn -o javafx:run`, files from `build-logs/manual`:
+1. `beeps_stereo_44100`: select the second beep, Ctrl+X: it vanishes, later beeps move left, clip borders show; play it; Ctrl+Z restores picture, sound and the selection; Ctrl+Y cuts again.
+2. Copy a beep, click elsewhere, Ctrl+V: the beep is inserted and selected, borders appear; play it; undo.
+3. Delete and Backspace both delete; Silence on a beep leaves a silent gap; Trim keeps only the selection, moved to the start; Split at the cursor adds a border and the sound is unchanged.
+4. Open a second file as another track: a header click selects it, Ctrl+click toggles, Shift+click selects a range; with one track selected only that track is edited, with none selected all tracks are; pasting a stereo fragment into a mono track shows the reason in the status bar and changes nothing.
+5. While playing or paused: the Edit items except Copy are greyed and their shortcuts do nothing, Copy works, header selection works; after Stop everything works; the labels read "Undo Cut" and so on.
+6. File > Open WAV is undoable ("Undo Import"); Track > Remove Track removes the selected tracks and undo restores them in place; Clear tracks wipes the history (Undo greyed) and the title loses its "*"; the title shows "*" after an edit and loses it when undone back to the start.
+7. `long_stereo_44100_10min`: cut a chunk from the middle: the UI stays responsive, and playback of the edited result starts and ends correctly.
+8. Zoom in to sample level: clip borders stay on the right columns while scrolling.
+9. Apply many edits, then undo them all: sound and picture are back to the original.

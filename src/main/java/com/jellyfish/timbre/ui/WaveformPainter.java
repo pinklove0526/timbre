@@ -48,7 +48,25 @@ public final class WaveformPainter {
      * @throws IllegalArgumentException if {@code width} is out of range
      */
     public static void paint(GraphicsContext g, LaneColumns columns, TimeAxis axis, double originY, int width) {
+        paint(g, columns, axis, originY, width, new int[0]);
+    }
+
+    /**
+     * Paints one lane with clip borders, including its separator row.
+     *
+     * @param g             the graphics context of the lane canvas
+     * @param columns       the sampled columns of the lane
+     * @param axis          the axis the columns were sampled with
+     * @param originY       the canvas row of the lane's row 0
+     * @param width         the number of columns to paint, at most {@code columns.width()}
+     * @param borderColumns the clip border columns ({@link com.jellyfish.timbre.ui.viewmodel.ClipBoundaries});
+     *                      columns outside {@code [0, width)} are ignored
+     * @throws IllegalArgumentException if {@code width} is out of range
+     */
+    public static void paint(GraphicsContext g, LaneColumns columns, TimeAxis axis, double originY, int width,
+            int[] borderColumns) {
         Objects.requireNonNull(g, "g");
+        Objects.requireNonNull(borderColumns, "borderColumns");
         Objects.requireNonNull(columns, "columns");
         Objects.requireNonNull(axis, "axis");
         if (width < 0 || width > columns.width()) {
@@ -63,6 +81,12 @@ public final class WaveformPainter {
             case SAMPLE_LINES -> paintSamples(g, columns, axis, originY);
             case PLACEHOLDER -> {
                 // background and centre line only
+            }
+        }
+        g.setFill(Theme.CLIP_BORDER);
+        for (int x : borderColumns) {
+            if (x >= 0 && x < width) {
+                g.fillRect(x, originY, 1, LaneGeometry.LANE_HEIGHT);
             }
         }
         g.setFill(Theme.SEPARATOR);

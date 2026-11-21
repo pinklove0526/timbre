@@ -20,10 +20,13 @@ import com.jellyfish.timbre.ui.viewmodel.TimeFormat;
 import javafx.geometry.Insets;
 import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 
 /**
  * The status bar: the cursor time and the selection start, end and length, all in the fixed format
- * {@code h:mm:ss.mmm} so the text never changes width.
+ * {@code h:mm:ss.mmm} so the text never changes width; at the right end a message label (for example the
+ * reason of a refused edit).
  *
  * <p><b>Threading:</b> JavaFX application thread only.
  */
@@ -31,6 +34,7 @@ public final class StatusBarView extends HBox {
 
     private final Label cursorLabel = new Label();
     private final Label selectionLabel = new Label();
+    private final Label messageLabel = new Label();
 
     /** Creates the bar showing the zero state. */
     public StatusBarView() {
@@ -39,7 +43,14 @@ public final class StatusBarView extends HBox {
         String mono = "-fx-font-family: 'monospaced';";
         cursorLabel.setStyle(mono);
         selectionLabel.setStyle(mono);
-        getChildren().addAll(cursorLabel, selectionLabel);
+        messageLabel.setId("statusMessage");
+        // the time readouts never shrink; a long message is cut with an ellipsis instead
+        cursorLabel.setMinWidth(Region.USE_PREF_SIZE);
+        selectionLabel.setMinWidth(Region.USE_PREF_SIZE);
+        messageLabel.setMinWidth(0);
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        getChildren().addAll(cursorLabel, selectionLabel, spacer, messageLabel);
         setSpacing(24);
         setPadding(new Insets(3, 8, 3, 8));
         setId("statusBar");
@@ -86,6 +97,11 @@ public final class StatusBarView extends HBox {
     /** @return the cursor label (id {@code statusCursor}) */
     public Label cursorLabel() {
         return cursorLabel;
+    }
+
+    /** @return the message label at the right end (id {@code statusMessage}): refusals and other notes */
+    public Label messageLabel() {
+        return messageLabel;
     }
 
     /** @return the selection label (id {@code statusSelection}) */

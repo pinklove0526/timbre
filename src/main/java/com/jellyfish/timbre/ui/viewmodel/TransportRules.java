@@ -23,7 +23,8 @@ import java.util.Objects;
  *
  * <p>STOPPED: only Play is enabled, the selection is free, Space plays, P does nothing. PLAYING: Pause and
  * Stop are enabled, the selection is locked, Space stops, P pauses. PAUSED: like PLAYING, but the pause
- * button reads "Resume" and P resumes.
+ * button reads "Resume" and P resumes. Edits (cut, paste, delete, silence, trim, split, undo, redo, import,
+ * remove track) are locked while PLAYING or PAUSED; copy is allowed in every state.
  *
  * <p><b>Threading:</b> stateless; safe to call from any thread.
  */
@@ -84,6 +85,23 @@ public final class TransportRules {
      */
     public static boolean selectionLocked(State state) {
         return Objects.requireNonNull(state, "state") != State.STOPPED;
+    }
+
+    /**
+     * @param state the engine state
+     * @return true if edits that change the project are ignored (PLAYING or PAUSED)
+     */
+    public static boolean editsLocked(State state) {
+        return Objects.requireNonNull(state, "state") != State.STOPPED;
+    }
+
+    /**
+     * @param state the engine state
+     * @return true: copy changes only the clipboard and is allowed in every state
+     */
+    public static boolean copyAllowed(State state) {
+        Objects.requireNonNull(state, "state");
+        return true;
     }
 
     /**
