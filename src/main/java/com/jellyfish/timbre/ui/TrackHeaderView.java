@@ -20,12 +20,15 @@ import com.jellyfish.timbre.ui.viewmodel.LaneGeometry;
 import java.util.Objects;
 import javafx.geometry.Insets;
 import javafx.scene.control.Label;
+import javafx.scene.layout.Background;
+import javafx.scene.layout.BackgroundFill;
 import javafx.scene.layout.VBox;
 
 /**
  * The 120 px header of one track: its name and a format line such as {@code Stereo, 44100 Hz, 32-bit float}
  * (the in-memory sample format is always 32-bit float). No mute or solo before Milestone 7. The header is as
- * tall as the track's lanes (91 px per channel).
+ * tall as the track's lanes (91 px per channel). A selected track's header is drawn darker
+ * ({@link #setSelected}); the owner installs the press handler that changes the track selection.
  *
  * <p><b>Threading:</b> JavaFX application thread only.
  */
@@ -53,7 +56,7 @@ public final class TrackHeaderView extends VBox {
         getChildren().addAll(nameLabel, formatLabel);
         setSpacing(4);
         setPadding(new Insets(6));
-        setStyle("-fx-background-color: " + Theme.HEADER_BACKGROUND_CSS + ";");
+        setSelected(false);
         double height = (double) LaneGeometry.ROW_STRIDE * track.channelCount();
         setMinSize(Theme.HEADER_WIDTH, height);
         setPrefSize(Theme.HEADER_WIDTH, height);
@@ -72,6 +75,29 @@ public final class TrackHeaderView extends VBox {
     public static String formatLine(int channels, int sampleRate) {
         String layout = channels == 1 ? "Mono" : channels == 2 ? "Stereo" : channels + " channels";
         return layout + ", " + sampleRate + " Hz, 32-bit float";
+    }
+
+    /**
+     * Shows the selected or normal state: the background is {@link Theme#TRACK_SELECTED_BACKGROUND} or
+     * {@link Theme#TRACK_HEADER_BACKGROUND}, and the style class "selected" is present only when selected.
+     *
+     * @param selected true to show the header as selected
+     */
+    public void setSelected(boolean selected) {
+        setBackground(new Background(new BackgroundFill(
+                selected ? Theme.TRACK_SELECTED_BACKGROUND : Theme.TRACK_HEADER_BACKGROUND, null, null)));
+        if (selected) {
+            if (!getStyleClass().contains("selected")) {
+                getStyleClass().add("selected");
+            }
+        } else {
+            getStyleClass().remove("selected");
+        }
+    }
+
+    /** @return true if the header shows the selected state */
+    public boolean isSelected() {
+        return getStyleClass().contains("selected");
     }
 
     /** @return the name label (id {@code trackName}) */

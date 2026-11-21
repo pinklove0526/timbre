@@ -22,15 +22,18 @@ import java.util.Objects;
 import java.util.OptionalInt;
 
 /**
- * A set of tracks sharing one sample rate. The first track added fixes the rate, and it
- * stays fixed (to be revisited in Milestone 4). Channel counts may differ per track.
+ * An ordered set of tracks sharing one sample rate. The rate is derived from the tracks: an empty project
+ * has none and accepts a track of any rate; otherwise every track must have the rate of the tracks already
+ * there. Removing the last track therefore frees the rate again, and re-inserting tracks restores it.
+ * Channel counts may differ per track. Tracks are identified by identity; a track can be in the project
+ * only once.
  *
- * <p><b>Threading:</b> mutable; used from one thread at a time in Milestone 1.
+ * <p><b>Threading:</b> mutable and not thread-safe; mutate it on one thread only (the JavaFX application
+ * thread in the app).
  */
 public final class Project {
 
     private final List<Track> tracks = new ArrayList<>();
-    private int sampleRate;
 
     /** Creates an empty project. */
     public Project() {
@@ -39,23 +42,73 @@ public final class Project {
 
     /** @return the project sample rate, or empty if no track has been added */
     public OptionalInt sampleRate() {
-        return sampleRate == 0 ? OptionalInt.empty() : OptionalInt.of(sampleRate);
+        return tracks.isEmpty() ? OptionalInt.empty() : OptionalInt.of(tracks.get(0).sampleRate());
     }
 
     /**
-     * Adds a track.
+     * Adds a track at the end.
      *
      * @param track the track
      * @throws SampleRateMismatchException if the track's rate differs from the project's rate
+     * @throws IllegalArgumentException    if the track is already in the project
      */
     public void addTrack(Track track) {
+        insertTrack(tracks.size(), track);
+    }
+
+    /**
+     * Inserts a track at a position; later tracks move down by one.
+     *
+     * @param index the position, {@code 0 <= index <= tracks().size()}
+     * @param track the track
+     * @throws SampleRateMismatchException if the track's rate differs from the project's rate
+     * @throws IllegalArgumentException    if the track is already in the project
+     * @throws IndexOutOfBoundsException   if the index is out of range
+     */
+    public void insertTrack(int index, Track track) {
         Objects.requireNonNull(track, "track");
-        if (sampleRate == 0) {
-            sampleRate = track.sampleRate();
-        } else if (track.sampleRate() != sampleRate) {
-            throw new SampleRateMismatchException(sampleRate, track.sampleRate());
+        if (index < 0 || index > tracks.size()) {
+            throw new IndexOutOfBoundsException("index " + index + " not in [0, " + tracks.size() + "]");
         }
-        tracks.add(track);
+        if (indexOf(track) >= 0) {
+            throw new IllegalArgumentException("track \"" + track.name() + "\" is already in the project");
+        }
+        if (!tracks.isEmpty() && track.sampleRate() != tracks.get(0).sampleRate()) {
+            throw new SampleRateMismatchException(tracks.get(0).sampleRate(), track.sampleRate());
+        }
+        tracks.add(index, track);
+    }
+
+    /**
+     * Removes a track.
+     *
+     * @param track the track (compared by identity)
+     * @return the index the track had
+     * @throws IllegalArgumentException if the track is not in the project
+     */
+    public int removeTrack(Track track) {
+        Objects.requireNonNull(track, "track");
+        int index = indexOf(track);
+        if (index < 0) {
+            throw new IllegalArgumentException("track \"" + track.name() + "\" is not in the project");
+        }
+        tracks.remove(index);
+        return index;
+    }
+
+    /**
+     * Returns the position of a track.
+     *
+     * @param track the track (compared by identity)
+     * @return its index, or -1 if it is not in the project
+     */
+    public int indexOf(Track track) {
+        for (int i = 0; i < tracks.size(); i++) {
+            if (tracks.get(i) == track) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** @return an unmodifiable view of the tracks, in the order added */

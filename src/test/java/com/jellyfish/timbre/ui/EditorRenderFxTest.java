@@ -145,14 +145,33 @@ class EditorRenderFxTest {
     /** Asserts every row of one lane column (rows 0..90) of a lane whose top row is {@code y0}. */
     private static void assertLaneColumn(BufferedImage img, int x, int y0, int peakTop, int peakBottom,
             int rmsTop, int rmsBottom) {
+        assertLaneColumn(img, x, y0, peakTop, peakBottom, rmsTop, rmsBottom, false);
+    }
+
+    /**
+     * Same, for a column that may carry a clip border (M4 Phase B): a border column is
+     * {@link Theme#CLIP_BORDER} on rows 0..89 (drawn over bands and centre line), and row 90 stays the separator.
+     */
+    private static void assertLaneColumn(BufferedImage img, int x, int y0, int peakTop, int peakBottom,
+            int rmsTop, int rmsBottom, boolean border) {
         for (int row = 0; row <= 90; row++) {
-            assertPixel(img, x, y0 + row, expectedLaneColor(row, peakTop, peakBottom, rmsTop, rmsBottom),
-                    "lane row " + row);
+            Color expected = border && row < 90 ? Theme.CLIP_BORDER
+                    : expectedLaneColor(row, peakTop, peakBottom, rmsTop, rmsBottom);
+            assertPixel(img, x, y0 + row, expected, "lane row " + row + (border ? " (clip border)" : ""));
         }
     }
 
     private static void assertSilentColumn(BufferedImage img, int x, int y0) {
-        assertLaneColumn(img, x, y0, -1, -1, -1, -1);
+        assertLaneColumn(img, x, y0, -1, -1, -1, -1, false);
+    }
+
+    private static void assertSilentColumn(BufferedImage img, int x, int y0, boolean border) {
+        assertLaneColumn(img, x, y0, -1, -1, -1, -1, border);
+    }
+
+    /** M4 Phase B: a whole-width clip [0, N) at N / 1000 frames per pixel has its borders at columns 0 and 999. */
+    private static boolean edge(int x) {
+        return x == 0 || x == 999;
     }
 
     private static MemorySampleSource mono(float[] data) {
@@ -205,7 +224,7 @@ class EditorRenderFxTest {
         assertEquals(91, img.getHeight());
         for (int x = 0; x < 1000; x++) {
             int row = x < 500 ? 12 : 56; // yOf(0.75) = 45 - 33 ; yOf(-0.25) = 45 + 11
-            assertLaneColumn(img, x, 0, row, row, row, row);
+            assertLaneColumn(img, x, 0, row, row, row, row, edge(x));
         }
 
         // PEAKS: 1,024,000 frames at 1024 frames per pixel; the change at frame 512,000 is a multiple of the
@@ -227,7 +246,7 @@ class EditorRenderFxTest {
         BufferedImage img2 = snap(lane2, "a2-peaks", false);
         for (int x = 0; x < 1000; x++) {
             int row = x < 500 ? 12 : 56;
-            assertLaneColumn(img2, x, 0, row, row, row, row);
+            assertLaneColumn(img2, x, 0, row, row, row, row, edge(x));
         }
     }
 
@@ -250,7 +269,7 @@ class EditorRenderFxTest {
         assertEquals(LaneColumnsMode.PLACEHOLDER, LaneColumnsMode.of(lane));
         BufferedImage placeholder = snap(lane, "b1-placeholder", false);
         for (int x = 0; x < 1000; x++) {
-            assertSilentColumn(placeholder, x, 0);
+            assertSilentColumn(placeholder, x, 0, edge(x));
         }
         gated.open();
         awaitPyramid(m, gated);
@@ -261,7 +280,7 @@ class EditorRenderFxTest {
         assertEquals(LaneColumnsMode.PEAKS, LaneColumnsMode.of(lane));
         BufferedImage ready = snap(lane, "b2-silence-peaks", false);
         for (int x = 0; x < 1000; x++) {
-            assertSilentColumn(ready, x, 0);
+            assertSilentColumn(ready, x, 0, edge(x));
         }
     }
 
@@ -299,8 +318,8 @@ class EditorRenderFxTest {
         assertEquals(Theme.HEADER_WIDTH + 1000, img.getWidth());
         assertEquals(182, img.getHeight());
         for (int x : new int[] {0, 1, 333, 999}) {
-            assertLaneColumn(img, Theme.HEADER_WIDTH + x, 0, 10, 63, 25, 63);
-            assertLaneColumn(img, Theme.HEADER_WIDTH + x, 91, 36, 49, 40, 49);
+            assertLaneColumn(img, Theme.HEADER_WIDTH + x, 0, 10, 63, 25, 63, edge(x));
+            assertLaneColumn(img, Theme.HEADER_WIDTH + x, 91, 36, 49, 40, 49, edge(x));
         }
         assertTrue(scene.getRoot() == row);
         // header column: no waveform colour inside the header
@@ -337,13 +356,21 @@ class EditorRenderFxTest {
         // 300..499 gap; 500..549 +0.5 (23); 550..599 -0.25 (56); 600.. gap
         for (int x = 0; x < 1000; x++) {
             if ((x >= 100 && x < 200) || (x >= 500 && x < 550)) {
-                assertLaneColumn(img, x, 0, 23, 23, 23, 23);
+                assertLaneColumn(img, x, 0, 23, 23, 23, 23, dBorder(x));
             } else if ((x >= 200 && x < 300) || (x >= 550 && x < 600)) {
-                assertLaneColumn(img, x, 0, 56, 56, 56, 56);
+                assertLaneColumn(img, x, 0, 56, 56, 56, 56, dBorder(x));
             } else {
-                assertSilentColumn(img, x, 0);
+                assertSilentColumn(img, x, 0, dBorder(x));
             }
         }
+    }
+
+    /**
+     * M4 Phase B: clip borders of case (d) at 10 frames per pixel: clip 1 [1000, 3000) -> 100 and 299, clip 2
+     * [5000, 6000) -> 500 and 599.
+     */
+    private static boolean dBorder(int x) {
+        return x == 100 || x == 299 || x == 500 || x == 599;
     }
 
     // ------------------------------------------------------------------ (e) SAMPLE_LINES
@@ -375,7 +402,10 @@ class EditorRenderFxTest {
                     int x = cx + dx;
                     int y = rows[k] + dy;
                     if (x >= 0 && x < 128 && y >= 0 && y <= 89) {
-                        assertPixel(img, x, y, Theme.SAMPLE_LINE, "dot " + k);
+                        // M4 Phase B: the clip [0, 16) has its start border at column 0 (its end border is at
+                        // column 255, outside the 128 px lane), drawn over the left part of dot 0
+                        Color expected = x == 0 ? Theme.CLIP_BORDER : Theme.SAMPLE_LINE;
+                        assertPixel(img, x, y, expected, "dot " + k);
                     }
                 }
             }
@@ -521,7 +551,7 @@ class EditorRenderFxTest {
         });
         BufferedImage before = snap(lane, "h1-before-ready", false);
         for (int x = 0; x < 1000; x += 37) {
-            assertSilentColumn(before, x, 0);
+            assertSilentColumn(before, x, 0, edge(x));
         }
         CountDownLatch bumped = new CountDownLatch(1);
         fx(() -> {
@@ -537,7 +567,7 @@ class EditorRenderFxTest {
         BufferedImage after = snap(lane, "h2-after-ready", false);
         for (int x = 0; x < 1000; x += 37) {
             int row = x < 500 ? 12 : 56;
-            assertLaneColumn(after, x, 0, row, row, row, row);
+            assertLaneColumn(after, x, 0, row, row, row, row, edge(x));
         }
         fx(() -> {
             m.close();

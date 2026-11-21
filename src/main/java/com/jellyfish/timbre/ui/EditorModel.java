@@ -16,21 +16,33 @@
 package com.jellyfish.timbre.ui;
 
 import com.jellyfish.timbre.dsp.PeakPyramidCache;
+import com.jellyfish.timbre.edit.Clipboard;
+import com.jellyfish.timbre.edit.Editor;
+import com.jellyfish.timbre.edit.History;
 import com.jellyfish.timbre.model.Clip;
 import com.jellyfish.timbre.model.Project;
 import com.jellyfish.timbre.model.Selection;
 import com.jellyfish.timbre.model.Track;
+import com.jellyfish.timbre.ui.viewmodel.SelectionTrail;
 import com.jellyfish.timbre.ui.viewmodel.TimeAxis;
+import com.jellyfish.timbre.ui.viewmodel.TrackSelection;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import javafx.application.Platform;
+import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.LongProperty;
 import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.ReadOnlyBooleanProperty;
 import javafx.beans.property.ReadOnlyIntegerProperty;
+import javafx.beans.property.ReadOnlyObjectProperty;
+import javafx.beans.property.ReadOnlyStringProperty;
+import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.SimpleLongProperty;
 import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.beans.property.StringProperty;
 
 /**
  * The state the editor views draw: the project, the time axis, the selection (the cursor is its start), an
@@ -40,6 +52,13 @@ import javafx.beans.property.SimpleObjectProperty;
  * <p>Two counters tell the views what to repaint: {@link #waveformVersion()} changes when the axis, the
  * project, the lane width or the pyramid readiness changes; {@link #overlayVersion()} additionally changes
  * when the selection or the playhead changes.
+ *
+ * <p>Milestone 4 adds the editing state: the {@link Editor} with its {@link History} and {@link Clipboard}
+ * (all on the same {@link Project}, which is never replaced), the {@link TrackSelection}, the
+ * {@link SelectionTrail} beside the history, a user message (the reason of a refused edit, for example) and
+ * the modified flag. {@link #tracksVersion()} changes when the list of tracks may have changed, and
+ * {@link #trackSelectionVersion()} when the track selection changed. All of it is used on the FX thread
+ * only, so the history listener needs no thread hop.
  *
  * <p><b>Threading:</b> JavaFX application thread only. The pyramid callback arrives on the
  * {@code timbre-peaks} thread and is handed to the FX thread through the executor given at construction
@@ -60,7 +79,16 @@ public final class EditorModel implements AutoCloseable {
     private final IntegerProperty laneWidth = new SimpleIntegerProperty(DEFAULT_LANE_WIDTH);
     private final IntegerProperty waveformVersion = new SimpleIntegerProperty();
     private final IntegerProperty overlayVersion = new SimpleIntegerProperty();
-    private Project project = new Project();
+    private final IntegerProperty tracksVersion = new SimpleIntegerProperty();
+    private final IntegerProperty trackSelectionVersion = new SimpleIntegerProperty();
+    private final StringProperty message = new SimpleStringProperty("");
+    private final BooleanProperty modified = new SimpleBooleanProperty(false);
+    private final Project project = new Project();
+    private final History history = new History();
+    private final Clipboard clipboard = new Clipboard();
+    private final Editor editor = new Editor(project, history, clipboard);
+    private final TrackSelection trackSelection = new TrackSelection();
+    private final SelectionTrail trail = new SelectionTrail();
     private boolean closed;
 
     /** Creates a model whose pyramid callbacks run on the JavaFX thread via {@link Platform#runLater}. */
@@ -76,6 +104,77 @@ public final class EditorModel implements AutoCloseable {
     public EditorModel(Executor fxExecutor) {
         this.fx = Objects.requireNonNull(fxExecutor, "fxExecutor");
         axis.set(TimeAxis.fit(EMPTY_PROJECT_SAMPLE_RATE, 0, DEFAULT_LANE_WIDTH));
+        history.addListener(() -> modified.set(history.isModified()));
+    }
+
+    /** @return the editor working on {@link #project()} */
+    public Editor editor() {
+        return editor;
+    }
+
+    /** @return the edit history */
+    public History history() {
+        return history;
+    }
+
+    /** @return the app clipboard */
+    public Clipboard clipboard() {
+        return clipboard;
+    }
+
+    /** @return the track selection */
+    public TrackSelection trackSelection() {
+        return trackSelection;
+    }
+
+    /** @return the selection trail kept in lockstep with the history */
+    public SelectionTrail trail() {
+        return trail;
+    }
+
+    /** @return the user message ("" when there is none) */
+    public ReadOnlyStringProperty messageProperty() {
+        return message;
+    }
+
+    /**
+     * Sets the user message.
+     *
+     * @param text the text, "" to clear
+     */
+    public void setMessage(String text) {
+        message.set(Objects.requireNonNull(text, "text"));
+    }
+
+    /** @return true while the history differs from its save point */
+    public ReadOnlyBooleanProperty modifiedProperty() {
+        return modified;
+    }
+
+    /** @return the counter that changes when the list of tracks may have changed */
+    public ReadOnlyIntegerProperty tracksVersion() {
+        return tracksVersion;
+    }
+
+    /** Signals that tracks were added, removed or re-ordered. */
+    public void markTracksChanged() {
+        tracksVersion.set(tracksVersion.get() + 1);
+        markWaveformDirty();
+    }
+
+    /** @return the counter that changes when the track selection changed */
+    public ReadOnlyIntegerProperty trackSelectionVersion() {
+        return trackSelectionVersion;
+    }
+
+    /** Signals that the track selection changed. */
+    public void markTrackSelectionChanged() {
+        trackSelectionVersion.set(trackSelectionVersion.get() + 1);
+    }
+
+    /** @return the selection property, for listeners */
+    public ReadOnlyObjectProperty<Selection> selectionProperty() {
+        return selection;
     }
 
     /** @return the project (do not add tracks directly; use {@link #addTrack(Track)}) */
@@ -238,25 +337,67 @@ public final class EditorModel implements AutoCloseable {
         Objects.requireNonNull(track, "track");
         boolean first = project.tracks().isEmpty();
         project.addTrack(track);
+        trackAdded(track, first);
+    }
+
+    /**
+     * Updates the view state after a track was added to the project by someone else (an undoable import):
+     * asks for the peak pyramid of every clip source (the cache builds each source once), fits the axis when
+     * the project was empty before, otherwise re-clamps the scroll position.
+     *
+     * @param track     the added track
+     * @param wasEmpty  true if the project had no tracks before
+     */
+    public void trackAdded(Track track, boolean wasEmpty) {
+        Objects.requireNonNull(track, "track");
         for (Clip c : track.clips()) {
             cache.request(c.source(), () -> fx.execute(this::pyramidReady));
         }
-        if (first) {
+        if (wasEmpty) {
             axis.set(TimeAxis.fit(sampleRate(), projectFrames(), laneWidth.get()));
         } else {
             TimeAxis a = axis.get();
             axis.set(a.scrolledTo(a.scrollFrame(), limits()));
         }
+        markTracksChanged();
+    }
+
+    /**
+     * Re-clamps the axis after the project changed: a new sample rate or an empty project gets the fitted
+     * axis; otherwise the zoom is kept (as on a window resize, the view is never silently re-fitted) and the
+     * scroll position is limited to the new scroll range.
+     */
+    public void reclampAxis() {
+        TimeAxis a = axis.get();
+        if (a.sampleRate() != sampleRate() || project.tracks().isEmpty()) {
+            axis.set(TimeAxis.fit(sampleRate(), projectFrames(), laneWidth.get()));
+        } else {
+            axis.set(a.scrolledTo(a.scrollFrame(), limits()));
+        }
         markWaveformDirty();
     }
 
-    /** Replaces the project with an empty one and resets the axis, selection and playhead. */
+    /**
+     * Empties the project (the same {@link Project} object, so the editor stays valid) and resets everything
+     * that belongs to it: axis, time selection, playhead, history (saved again), clipboard, selection trail,
+     * track selection and message. Not undoable.
+     */
     public void clear() {
-        project = new Project();
+        for (Track t : project.tracks().toArray(new Track[0])) {
+            project.removeTrack(t);
+        }
         axis.set(TimeAxis.fit(EMPTY_PROJECT_SAMPLE_RATE, 0, laneWidth.get()));
         selection.set(Selection.cursor(0));
         playhead.set(-1);
-        markWaveformDirty();
+        history.clear();
+        history.markSaved();
+        modified.set(history.isModified());
+        clipboard.clear();
+        trail.clear();
+        trackSelection.clear();
+        message.set("");
+        markTrackSelectionChanged();
+        markTracksChanged();
     }
 
     private void pyramidReady() {

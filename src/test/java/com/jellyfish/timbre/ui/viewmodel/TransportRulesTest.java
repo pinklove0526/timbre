@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
-/** The table, written by hand: state, play, pause, stop, "Resume" label, locked, Space, P. */
+/** The table, written by hand: state, play, pause, stop, "Resume" label, locked, edits locked, copy, Space, P. */
 class TransportRulesTest {
 
     @Test
@@ -38,6 +38,8 @@ class TransportRulesTest {
         assertEquals(false, TransportRules.stopEnabled(STOPPED));
         assertEquals(false, TransportRules.pauseLabelIsResume(STOPPED));
         assertEquals(false, TransportRules.selectionLocked(STOPPED));
+        assertEquals(false, TransportRules.editsLocked(STOPPED));
+        assertEquals(true, TransportRules.copyAllowed(STOPPED));
         assertEquals(PLAY, TransportRules.spaceAction(STOPPED));
         assertEquals(NONE, TransportRules.pauseAction(STOPPED));
     }
@@ -49,6 +51,8 @@ class TransportRulesTest {
         assertEquals(true, TransportRules.stopEnabled(PLAYING));
         assertEquals(false, TransportRules.pauseLabelIsResume(PLAYING));
         assertEquals(true, TransportRules.selectionLocked(PLAYING));
+        assertEquals(true, TransportRules.editsLocked(PLAYING));
+        assertEquals(true, TransportRules.copyAllowed(PLAYING));
         assertEquals(STOP, TransportRules.spaceAction(PLAYING));
         assertEquals(PAUSE, TransportRules.pauseAction(PLAYING));
     }
@@ -60,6 +64,8 @@ class TransportRulesTest {
         assertEquals(true, TransportRules.stopEnabled(PAUSED));
         assertEquals(true, TransportRules.pauseLabelIsResume(PAUSED));
         assertEquals(true, TransportRules.selectionLocked(PAUSED));
+        assertEquals(true, TransportRules.editsLocked(PAUSED));
+        assertEquals(true, TransportRules.copyAllowed(PAUSED));
         assertEquals(STOP, TransportRules.spaceAction(PAUSED));
         assertEquals(RESUME, TransportRules.pauseAction(PAUSED));
     }

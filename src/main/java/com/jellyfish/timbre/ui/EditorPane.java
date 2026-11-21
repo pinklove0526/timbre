@@ -15,7 +15,6 @@
  */
 package com.jellyfish.timbre.ui;
 
-import com.jellyfish.timbre.audio.MixPlan;
 import com.jellyfish.timbre.audio.PlaybackEngine;
 import com.jellyfish.timbre.audio.PlaybackListener;
 import com.jellyfish.timbre.audio.WavFile;
@@ -28,10 +27,17 @@ import com.jellyfish.timbre.ui.viewmodel.TimeAxis;
 import com.jellyfish.timbre.ui.viewmodel.TransportRules;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.property.ReadOnlyStringProperty;
+import javafx.beans.property.ReadOnlyStringWrapper;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.beans.property.StringProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
@@ -81,11 +87,12 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     private final PlaybackEngine engine;
     private final EditorModel model = new EditorModel();
     private final EditorActions actions;
-    private MixPlan plan = MixPlan.empty();
+    private final Map<Track, TrackRowView> rowsByTrack = new IdentityHashMap<>();
+    private final StringProperty titleBase = new SimpleStringProperty("Timbre");
+    private final ReadOnlyStringWrapper title = new ReadOnlyStringWrapper("Timbre");
 
     private final Label stateLabel = new Label("STOPPED");
     private final Label statsLabel = new Label("Suspected underruns: 0");
-    private final Label messageLabel = new Label();
     private final Button playButton = new Button("Play");
     private final Button pauseButton = new Button("Pause");
     private final Button stopButton = new Button("Stop");
@@ -129,9 +136,10 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
      */
     EditorPane(PlaybackEngine engine) {
         this.engine = Objects.requireNonNull(engine, "engine");
-        this.actions = new EditorActions(model, engine, this::showMessage);
+        this.actions = new EditorActions(model, engine);
         MenuItem open = new MenuItem("Open WAV...");
         open.setOnAction(e -> openWav());
+        open.disableProperty().bind(actions.importEnabled().not());
         clearItem.setOnAction(e -> clearTracks());
         MenuItem exit = new MenuItem("Exit");
         exit.setOnAction(e -> Platform.exit());
@@ -148,12 +156,17 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
                                 actions::selectAll),
                         item("Clear Selection", new KeyCodeCombination(KeyCode.ESCAPE), actions::clearSelection),
                         item("Cursor to Start", new KeyCodeCombination(KeyCode.HOME), actions::cursorToStart),
-                        item("Cursor to End", new KeyCodeCombination(KeyCode.END), actions::cursorToEnd)));
+                        item("Cursor to End", new KeyCodeCombination(KeyCode.END), actions::cursorToEnd)),
+                editMenu(), trackMenu());
 
-        HBox transport = new HBox(8, playButton, pauseButton, stopButton, stateLabel, statsLabel, messageLabel);
+        HBox transport = new HBox(8, playButton, pauseButton, stopButton, stateLabel, statsLabel);
         transport.setAlignment(Pos.CENTER_LEFT);
         transport.setPadding(new Insets(4, 8, 4, 8));
-        messageLabel.setWrapText(false);
+        statusBar.messageLabel().textProperty().bind(model.messageProperty());
+        title.bind(Bindings.when(model.modifiedProperty()).then(Bindings.concat(titleBase, " *"))
+                .otherwise(titleBase));
+        model.tracksVersion().addListener((obs, old, now) -> syncRows());
+        model.trackSelectionVersion().addListener((obs, old, now) -> refreshHeaders());
 
         Region rulerSpacer = new Region();
         rulerSpacer.setMinWidth(Theme.HEADER_WIDTH);
@@ -281,7 +294,24 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
         return inputPane;
     }
 
-    /** @return the menu bar (File, View, Select) */
+    /**
+     * @return the window title: the application name ("Timbre" unless set with {@link #setTitleBase}), plus
+     *         " *" while the history is modified; bind the stage title to it
+     */
+    public ReadOnlyStringProperty titleProperty() {
+        return title.getReadOnlyProperty();
+    }
+
+    /**
+     * Sets the application name the title starts with.
+     *
+     * @param name the name, for example "Timbre"
+     */
+    public void setTitleBase(String name) {
+        titleBase.set(Objects.requireNonNull(name, "name"));
+    }
+
+    /** @return the menu bar (File, View, Select, Edit, Track) */
     MenuBar menuBar() {
         return menuBar;
     }
@@ -311,12 +341,79 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
      */
     public void addTrack(Track track) {
         model.addTrack(track);
-        TrackRowView row = new TrackRowView(model, track);
-        rows.add(row);
-        tracksBox.getChildren().add(row);
-        plan = MixPlan.of(model.project());
-        engine.setPlan(plan);
+        actions.rebuildPlan();
+        syncRows();
         refreshAll();
+    }
+
+    /**
+     * Makes the track rows match the project's tracks (same order, one row per track, rows of removed tracks
+     * dropped, a row kept for a track that stays so its canvases are reused).
+     */
+    private void syncRows() {
+        List<Track> tracks = model.project().tracks();
+        rowsByTrack.keySet().removeIf(t -> model.project().indexOf(t) < 0);
+        rows.clear();
+        for (Track t : tracks) {
+            TrackRowView row = rowsByTrack.computeIfAbsent(t, this::newRow);
+            rows.add(row);
+        }
+        tracksBox.getChildren().setAll(rows);
+        refreshHeaders();
+        model.markWaveformDirty();
+    }
+
+    private TrackRowView newRow(Track track) {
+        TrackRowView row = new TrackRowView(model, track);
+        row.header().setOnMousePressed(e -> {
+            int index = model.project().indexOf(track);
+            if (index >= 0 && e.getButton() == MouseButton.PRIMARY) {
+                actions.selectTrack(index, e.isShortcutDown(), e.isShiftDown());
+            }
+            e.consume();
+        });
+        return row;
+    }
+
+    private void refreshHeaders() {
+        for (TrackRowView row : rows) {
+            row.header().setSelected(model.trackSelection().isSelected(row.track()));
+        }
+    }
+
+    private Menu editMenu() {
+        MenuItem undo = item("Undo", new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN), actions::undo);
+        undo.textProperty().bind(actions.undoLabel());
+        undo.disableProperty().bind(actions.undoEnabled().not());
+        MenuItem redo = item("Redo", new KeyCodeCombination(KeyCode.Y, KeyCombination.SHORTCUT_DOWN), actions::redo);
+        redo.textProperty().bind(actions.redoLabel());
+        redo.disableProperty().bind(actions.redoEnabled().not());
+        MenuItem cut = item("Cut", new KeyCodeCombination(KeyCode.X, KeyCombination.SHORTCUT_DOWN), actions::cut);
+        cut.disableProperty().bind(actions.cutEnabled().not());
+        MenuItem copy = item("Copy", new KeyCodeCombination(KeyCode.C, KeyCombination.SHORTCUT_DOWN), actions::copy);
+        copy.disableProperty().bind(actions.copyEnabled().not());
+        MenuItem paste = item("Paste", new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN),
+                actions::paste);
+        paste.disableProperty().bind(actions.pasteEnabled().not());
+        MenuItem delete = item("Delete", new KeyCodeCombination(KeyCode.DELETE), actions::deleteSelection);
+        delete.disableProperty().bind(actions.cutEnabled().not());
+        MenuItem silence = item("Silence", new KeyCodeCombination(KeyCode.L, KeyCombination.SHORTCUT_DOWN),
+                actions::silence);
+        silence.disableProperty().bind(actions.cutEnabled().not());
+        MenuItem trim = item("Trim", new KeyCodeCombination(KeyCode.T, KeyCombination.SHORTCUT_DOWN), actions::trim);
+        trim.disableProperty().bind(actions.cutEnabled().not());
+        MenuItem split = item("Split", new KeyCodeCombination(KeyCode.I, KeyCombination.SHORTCUT_DOWN),
+                actions::split);
+        split.disableProperty().bind(actions.splitEnabled().not());
+        return new Menu("Edit", null, undo, redo, new SeparatorMenuItem(), cut, copy, paste, delete, silence, trim,
+                split);
+    }
+
+    private Menu trackMenu() {
+        MenuItem remove = new MenuItem("Remove Track");
+        remove.setOnAction(e -> actions.removeSelectedTracks());
+        remove.disableProperty().bind(actions.removeTrackEnabled().not());
+        return new Menu("Track", null, remove);
     }
 
     /**
@@ -352,21 +449,13 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     }
 
     private void addFromWav(String fileName, WavFile wav) {
-        try {
-            addTrack(Track.of(baseName(fileName), wav.source()));
+        if (actions.importTrack(Track.of(baseName(fileName), wav.source()))) {
             showMessage("Opened " + fileName);
-        } catch (IllegalArgumentException e) { // includes SampleRateMismatchException
-            showMessage(e.getMessage());
         }
     }
 
     private void clearTracks() {
-        engine.stop();
-        model.clear();
-        rows.clear();
-        tracksBox.getChildren().clear();
-        plan = MixPlan.empty();
-        engine.setPlan(plan);
+        actions.clearTracks();
         showMessage("");
         refreshAll();
     }
@@ -393,9 +482,11 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     }
 
     /**
-     * The single key filter. It handles and consumes every shortcut itself (the menu accelerators exist for
-     * display and are not reached because the event is consumed here); Space is consumed on press and on
-     * release so a focused button never fires.
+     * The single key filter. It handles and consumes the transport, selection and view shortcuts itself (the
+     * View and Select menu accelerators exist for display and are not reached because the event is consumed
+     * here), plus the two edit keys that cannot be accelerators (Backspace for Delete, Ctrl/Cmd+Shift+Z for
+     * Redo). The other edit shortcuts are the Edit menu's accelerators, which do not fire while their item is
+     * disabled. Space is consumed on press and on release so a focused button never fires.
      */
     private void onKey(KeyEvent e) {
         KeyCode code = e.getCode();
@@ -416,8 +507,11 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
                 case ESCAPE -> action = actions::clearSelection;
                 case HOME -> action = actions::cursorToStart;
                 case END -> action = actions::cursorToEnd;
+                case BACK_SPACE -> action = actions::deleteSelection; // a second key for Delete: no accelerator
                 default -> { }
             }
+        } else if (e.isShortcutDown() && e.isShiftDown() && !e.isAltDown() && code == KeyCode.Z) {
+            action = actions::redo; // a second key for Redo: no accelerator
         } else if (shortcutOnly) {
             switch (code) {
                 case A -> action = actions::selectAll;
@@ -491,16 +585,17 @@ public final class EditorPane extends BorderPane implements AutoCloseable {
     // ------------------------------------------------------------------ transport
 
     private void showMessage(String text) {
-        messageLabel.setText(text);
+        model.setMessage(text);
     }
 
     private void refreshAll() {
         PlaybackEngine.State s = engine.state();
         stateLabel.setText(s.name());
-        playButton.setDisable(!TransportRules.playEnabled(s) || plan.isEmpty());
+        playButton.setDisable(!TransportRules.playEnabled(s) || actions.plan().isEmpty());
         pauseButton.setText(TransportRules.pauseLabelIsResume(s) ? "Resume" : "Pause");
         pauseButton.setDisable(!TransportRules.pauseEnabled(s));
         stopButton.setDisable(!TransportRules.stopEnabled(s));
+        actions.refreshEnabled();
     }
 
     // ------------------------------------------------------------------ painting

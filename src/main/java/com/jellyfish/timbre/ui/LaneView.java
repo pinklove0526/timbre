@@ -15,17 +15,20 @@
  */
 package com.jellyfish.timbre.ui;
 
+import com.jellyfish.timbre.model.Clip;
 import com.jellyfish.timbre.model.Track;
+import com.jellyfish.timbre.ui.viewmodel.ClipBoundaries;
 import com.jellyfish.timbre.ui.viewmodel.LaneColumns;
 import com.jellyfish.timbre.ui.viewmodel.LaneGeometry;
 import com.jellyfish.timbre.ui.viewmodel.LaneSampler;
+import java.util.List;
 import java.util.Objects;
 import javafx.scene.canvas.Canvas;
 
 /**
  * One channel lane of one track: a canvas of {@code laneWidth x 91} pixels (90 rows of waveform and the
  * separator row). It owns a reusable {@link LaneColumns} buffer and asks the {@link LaneSampler} on every
- * repaint; the pyramid lookup is the model's cache.
+ * repaint; the pyramid lookup is the model's cache. Clip borders come from {@link ClipBoundaries}.
  *
  * <p><b>Threading:</b> JavaFX application thread only.
  */
@@ -74,6 +77,8 @@ public final class LaneView extends Canvas {
         }
         sampler.sample(track.clips(), channel, src -> model.cache().getIfReady(src).orElse(null), model.axis(),
                 width, columns);
-        WaveformPainter.paint(getGraphicsContext2D(), columns, model.axis(), 0, width);
+        List<Clip> clips = track.clips();
+        WaveformPainter.paint(getGraphicsContext2D(), columns, model.axis(), 0, width,
+                ClipBoundaries.columns(clips, model.axis(), width));
     }
 }

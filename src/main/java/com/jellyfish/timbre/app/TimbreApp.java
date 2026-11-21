@@ -42,7 +42,8 @@ public final class TimbreApp extends Application {
         stage.setScene(new Scene(root, WIDTH, HEIGHT));
         stage.setMinWidth(MIN_WIDTH);
         stage.setMinHeight(MIN_HEIGHT);
-        stage.setTitle(AppInfo.get().name());
+        editor.setTitleBase(AppInfo.get().name());
+        stage.titleProperty().bind(editor.titleProperty());
         stage.show();
     }
 
